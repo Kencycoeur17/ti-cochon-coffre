@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Ti kochon coffre — Demo VaultSim</title>
+
+  <!-- Fonts & Remix icons -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/remixicon@3.0.0/fonts/remixicon.css" rel="stylesheet">
+
+  <!-- CSS -->
+  <link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div class="brand">
+        <div class="logo">TK</div>
+        <div class="title">
+          <h1>Ti kochon coffre</h1>
+          <p class="muted">Prototype — gestion de coffre, MonCash simulé & transfert P2P</p>
+        </div>
+      </div>
+
+      <nav id="topNav">
+        <button class="ghost" data-link="#/">Accueil</button>
+        <button class="ghost" data-link="#/vault">Coffre</button>
+        <button class="ghost" data-link="#/p2p">Transfert P2P</button>
+        <button class="ghost" data-link="#/txs">Profil Tx</button>
+        <button class="btn" id="ctaAuth">Connexion / Inscription</button>
+      </nav>
+    </header>
+
+    <main>
+      <section id="view" class="card">
+        <!-- routing content -->
+      </section>
+
+      <aside class="card">
+        <div class="muted-xs">Session</div>
+        <div id="sessionInfo" style="margin:10px 0">Aucun utilisateur connecté.</div>
+        <div id="sideActions"></div>
+        <hr style="border:none;height:1px;background:rgba(255,255,255,0.03);margin:12px 0"/>
+        <div class="muted-xs">Dernières transactions</div>
+        <div id="miniTx" class="log">Aucune transaction.</div>
+        <div style="height:8px"></div>
+        <div class="muted-xs">Support</div>
+        <div class="small" style="margin-top:6px">Contact: <strong>support@fiaxy.net</strong></div>
+      </aside>
+    </main>
+
+    <footer class="muted-xs">Ti kochon coffre — Prototype local • Ne pas utiliser en production</footer>
+  </div>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- MonCash Modal (static in DOM so JS can open/close) -->
+  <div id="monModal" class="modal-hidden">
+    <div class="modal-inner">
+      <h3>Simulateur MonCash — Paiement entrant</h3>
+      <p class="muted-xs">Simule une notification MonCash pour créditer un compte utilisateur (professionnel).</p>
+      <form id="monForm">
+        <label>Destinataire (email ou demo)<input name="to" required placeholder="demo@fiaxy.test"></label>
+        <label>Montant (USD)<input name="amount" required type="number" step="0.01" min="0.01" value="10"></label>
+        <label>Référence (TxID)<input name="ref" placeholder="MC-12345678"></label>
+        <div class="modal-actions">
+          <button class="btn" type="submit">Simuler paiement</button>
+          <button type="button" class="ghost" id="closeMon">Annuler</button>
+        </div>
+      </form>
+      <div class="muted-xs" style="margin-top:12px">Astuce: utilise l'email <code>demo@fiaxy.test</code> pour tester rapidement.</div>
+    </div>
+  </div>
+
+  <!-- App JS -->
+  <script src="assets/js/app.js"></script>
+</body>
+</html>
