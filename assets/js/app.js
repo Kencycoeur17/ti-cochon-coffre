@@ -1,0 +1,246 @@
+/* assets/js/app.js
+   Ti kochon coffre — client SPA logic
+   Data: localStorage (users, txs). Session: sessionStorage.
+*/
+document.addEventListener('DOMContentLoaded', ()=>{
+
+  // short selectors
+  const $ = s => document.querySelector(s);
+  const toastEl = $('#toast');
+  function toast(msg, ms=2400){ toastEl.textContent = msg; toastEl.style.display='block'; setTimeout(()=> toastEl.style.display='none', ms); }
+
+  // keys
+  const K_USERS = 'tk_users_v1';
+  const K_TXS = 'tk_txs_v1';
+  const K_SESSION = 'tk_session_v1';
+
+  const fauxHash = p => btoa(p.split('').reverse().join(''));
+
+  function loadUsers(){ try{return JSON.parse(localStorage.getItem(K_USERS)||'[]')}catch(e){return []} }
+  function saveUsers(u){ localStorage.setItem(K_USERS, JSON.stringify(u)) }
+  function loadTxs(){ try{return JSON.parse(localStorage.getItem(K_TXS)||'[]')}catch(e){return []} }
+  function saveTxs(t){ localStorage.setItem(K_TXS, JSON.stringify(t)) }
+  function currentUser(){ return JSON.parse(sessionStorage.getItem(K_SESSION)||'null') }
+  function setCurrent(u){ sessionStorage.setItem(K_SESSION, JSON.stringify(u)); renderSide(); }
+  function clearCurrent(){ sessionStorage.removeItem(K_SESSION); renderSide(); }
+
+  // init demo
+  (function initData(){ if(loadUsers().length===0){
+    const demo = {id:1,name:'Demo User',email:'demo@fiaxy.test',pass:fauxHash('demo123'),balance:25.00};
+    saveUsers([demo]);
+    saveTxs([{id:Date.now(),type:'seed',email:demo.email,amount:25,ref:'INIT',note:'Compte demo créé',ts:new Date().toISOString()}]);
+  } renderSide(); })();
+
+  // router
+  const routes = {'/':home,'/vault':vault,'/p2p':p2p,'/txs':txs,'/signup':signup,'/login':login};
+  window.addEventListener('hashchange', router);
+
+  // wire static nav buttons
+  document.querySelectorAll('[data-link]').forEach(b=> b.addEventListener('click', e=>{ e.preventDefault(); location.hash = b.dataset.link; }));
+  $('#ctaAuth').addEventListener('click', ()=>{ if(currentUser()){ clearCurrent(); toast('Déconnecté'); } else location.hash = '#/login'; });
+
+  // modal open/close
+  const monModal = $('#monModal');
+  function openMonModal(){ monModal.classList.remove('modal-hidden'); monModal.style.display='grid'; }
+  function closeMonModal(){ monModal.style.display='none'; monModal.classList.add('modal-hidden'); }
+  $('#closeMon').addEventListener('click', closeMonModal);
+  $('#monForm').addEventListener('submit', (e)=>{ e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); simulateMoncash(f.to,f.amount||0,f.ref||('MC-'+Date.now())); closeMonModal(); });
+
+  function simulateMoncash(to, amount, ref){
+    const users = loadUsers(); const u = users.find(x=>x.email===to.toLowerCase());
+    if(!u){ toast('Destinataire introuvable'); return; }
+    u.balance = Math.round(((u.balance||0) + Number(amount))*100)/100; saveUsers(users);
+    pushTx({type:'moncash',email:u.email,amount:Number(amount),ref,ts:new Date().toISOString(),note:'MonCash simulated inbound'});
+    setCurrent(u); toast(`MonCash simulé: +${format(amount)}`);
+  }
+
+  // render functions (views)
+  function router(){ const path = location.hash.replace('#','')||'/'; const fn = routes[path]||notfound; $('#view').innerHTML=''; fn(); }
+
+  function home(){
+    $('#view').innerHTML = `
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+        <div style="flex:1;min-width:260px" class="card">
+          <div class="vault-hero">
+            <div class="pig-icon">🐷</div>
+            <div>
+              <div class="kv">Ti kochon coffre</div>
+              <div class="muted">Gestion simple de flux financiers - prototype</div>
+              <div style="height:10px"></div>
+              <div class="chip">Logo: <i class="ri-piggy-bank-line"></i> <span style="margin-left:6px">TiKochon</span></div>
+            </div>
+          </div>
+          <div style="height:12px"></div>
+          <div class="muted-xs">Fonctionnalités</div>
+          <ul class="small">
+            <li>Inscription / Connexion client-side</li>
+            <li>Simulation MonCash (paiement entrant)</li>
+            <li>Transfert P2P entre comptes</li>
+            <li>Historique & profil de transaction</li>
+          </ul>
+        </div>
+
+        <div style="flex:1;min-width:320px" class="card">
+          <h2>Accès rapide</h2>
+          <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+            <button class="btn" onclick="location.hash='#/signup'">Créer un compte</button>
+            <button class="ghost" onclick="location.hash='#/login'">Se connecter</button>
+            <button class="ghost" onclick="openMonModal()">Simuler MonCash</button>
+          </div>
+          <div style="height:10px"></div>
+          <div class="muted-xs">Test rapide</div>
+          <ol class="small">
+            <li>Créer un compte (ou utiliser <code>demo@fiaxy.test</code>)</li>
+            <li>Se connecter</li>
+            <li>Déposer via MonCash simulé, puis transférer P2P</li>
+            <li>Vérifier l'historique dans Profil Tx</li>
+          </ol>
+        </div>
+      </div>
+    `;
+  }
+
+  function signup(){
+    $('#view').innerHTML = `
+      <h2>Créer un compte</h2>
+      <form id="signupForm" class="small">
+        <label>Nom complet<input name="name" required></label>
+        <label>Email<input name="email" required type="email"></label>
+        <label>Mot de passe<input name="password" required type="password" placeholder="min 6 char"></label>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn" type="submit">S'inscrire</button>
+          <button class="ghost" type="button" onclick="location.hash='#/login'">J'ai déjà un compte</button>
+        </div>
+      </form>
+    `;
+    $('#signupForm').addEventListener('submit', e=>{ e.preventDefault(); const f=Object.fromEntries(new FormData(e.target)); const users=loadUsers(); if(users.some(u=>u.email===f.email.toLowerCase())){ toast('Email déjà utilisé'); return; } const user={id:Date.now(),name:f.name,email:f.email.toLowerCase(),pass:fauxHash(f.password),balance:0}; users.push(user); saveUsers(users); pushTx({type:'seed',email:user.email,amount:0,ref:'SIGNUP',ts:new Date().toISOString(),note:'Compte créé'}); setCurrent(user); toast('Compte créé'); location.hash='#/vault'; });
+  }
+
+  function login(){
+    $('#view').innerHTML = `
+      <h2>Connexion</h2>
+      <form id="loginForm" class="small">
+        <label>Email<input name="email" required type="email"></label>
+        <label>Mot de passe<input name="password" required type="password"></label>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button class="btn" type="submit">Se connecter</button>
+          <button class="ghost" type="button" onclick="location.hash='#/signup'">Créer compte</button>
+        </div>
+      </form>
+    `;
+    $('#loginForm').addEventListener('submit', e=>{ e.preventDefault(); const f=Object.fromEntries(new FormData(e.target)); const users=loadUsers(); const found=users.find(u=>u.email===f.email.toLowerCase() && u.pass===fauxHash(f.password)); if(!found){ toast('Identifiants incorrects'); return; } setCurrent(found); pushTx({type:'login',email:found.email,ts:new Date().toISOString(),note:'Connexion'}); toast('Connecté'); location.hash='#/vault'; });
+  }
+
+  function vault(){
+    const user = currentUser(); 
+    if(!user){ $('#view').innerHTML = `<h2>Accès au coffre</h2><p class="muted">Tu dois te connecter pour gérer ton coffre.</p><div style="margin-top:8px"><button class="btn" onclick="location.hash='#/login'">Se connecter</button></div>`; return; }
+    const users = loadUsers(); const me = users.find(x=>x.email===user.email) || user; setCurrent(me);
+    $('#view').innerHTML = `
+      <div style="display:flex;gap:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:300px">
+          <div class="card">
+            <div style="display:flex;gap:12px;align-items:center">
+              <div class="pig-icon">🐷</div>
+              <div>
+                <div class="kv">Bonjour, <strong>${me.name}</strong></div>
+                <div class="muted">Email: ${me.email}</div>
+                <div style="height:8px"></div>
+                <div class="balance">${format(me.balance)}</div>
+                <div class="muted-xs">Solde disponible</div>
+              </div>
+            </div>
+            <div style="height:12px"></div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn" id="openMonBtn">Simuler MonCash</button>
+              <button class="ghost" id="depositBtn">Dépôt manuel</button>
+              <button class="ghost" id="withdrawBtn">Retrait manuel</button>
+              <button class="ghost" id="logoutBtn">Se déconnecter</button>
+            </div>
+          </div>
+        </div>
+
+        <div style="flex:1;min-width:260px">
+          <div class="card">
+            <h3>Journal & actions</h3>
+            <div style="height:8px"></div>
+            <form id="manualForm" class="small">
+              <label>Type<select name="type"><option value="deposit">Dépôt</option><option value="withdraw">Retrait</option></select></label>
+              <label>Montant<input name="amount" type="number" required step="0.01" min="0.01" value="5"></label>
+              <div style="display:flex;gap:8px;margin-top:8px">
+                <button class="btn" type="submit">Envoyer</button>
+                <button type="button" class="ghost" id="clearTxs">Effacer historique (dev)</button>
+              </div>
+            </form>
+            <div style="height:8px"></div>
+            <div class="muted-xs">Dernières 6 tx</div>
+            <div id="lastTxs" class="log"></div>
+          </div>
+        </div>
+      </div>
+    `;
+    $('#openMonBtn').addEventListener('click', ()=> openMonModal());
+    $('#logoutBtn').addEventListener('click', ()=>{ clearCurrent(); toast('Déconnecté'); router(); });
+    $('#manualForm').addEventListener('submit', e=>{ e.preventDefault(); const f=Object.fromEntries(new FormData(e.target)); const amt=Number(f.amount); if(f.type==='withdraw' && amt > me.balance){ toast('Solde insuffisant'); return; } applyTx(me.email, f.type, amt, 'manual'); toast('Transaction ok'); router(); });
+    $('#clearTxs').addEventListener('click', ()=>{ localStorage.removeItem(K_TXS); toast('Historique effacé'); renderSide(); router(); });
+    renderLastTxs(me.email);
+  }
+
+  function p2p(){
+    const user = currentUser();
+    if(!user){ $('#view').innerHTML = `<h2>Transfert P2P</h2><p class="muted">Connecte-toi pour transférer vers un autre compte.</p>`; return; }
+    $('#view').innerHTML = `
+      <h2>Transfert P2P</h2>
+      <form id="p2pForm" class="small card">
+        <label>Destinataire (email)<input name="to" required type="email" placeholder="ex: ami@ex.com"></label>
+        <label>Montant (USD)<input name="amount" required type="number" step="0.01" min="0.01" value="1"></label>
+        <label>Note (optionnel)<input name="note" placeholder="Pour quoi ?"></label>
+        <div style="display:flex;gap:8px;margin-top:8px"><button class="btn" type="submit">Transférer</button></div>
+      </form>
+    `;
+    $('#p2pForm').addEventListener('submit', e=>{ e.preventDefault(); const f=Object.fromEntries(new FormData(e.target)); const me=currentUser(); const users=loadUsers(); const to = users.find(u=>u.email===f.to.toLowerCase()); if(!to){ toast('Destinataire non trouvé'); return; } const amt=Number(f.amount); if(amt > me.balance){ toast('Solde insuffisant'); return; } changeBalance(me.email, -amt); changeBalance(to.email, amt); pushTx({type:'p2p',email:me.email,to:to.email,amount:amt,ref:'P2P-'+Date.now(),note:f.note||'p2p',ts:new Date().toISOString()}); toast('Transfert effectué'); renderSide(); router(); });
+  }
+
+  function txs(){
+    const user = currentUser();
+    if(!user){ $('#view').innerHTML = `<h2>Profil transaction</h2><p class="muted">Connecte-toi pour voir ton historique.</p>`; return; }
+    const txsAll = loadTxs().filter(t=> t.email===user.email || t.to===user.email ).sort((a,b)=> new Date(b.ts)-new Date(a.ts));
+    $('#view').innerHTML = `
+      <h2>Profil de transaction — ${user.name}</h2>
+      <div style="height:12px"></div>
+      <div class="card">
+        <table>
+          <thead><tr><th>Type</th><th>Montant</th><th>Contrepartie</th><th>Référence</th><th>Heure</th></tr></thead>
+          <tbody>
+            ${txsAll.slice(0,40).map(t=>`<tr>
+              <td>${t.type}</td>
+              <td>${t.amount? format(t.amount) : '-'}</td>
+              <td>${t.to? t.to : (t.email===user.email? '—' : t.email)}</td>
+              <td>${t.ref||''}</td>
+              <td>${new Date(t.ts).toLocaleString()}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  function notfound(){ $('#view').innerHTML = `<h2>404</h2><p class="muted">Page introuvable</p>` }
+
+  // tx helpers
+  function pushTx(tx){ const txs = loadTxs(); tx.id = Date.now() + Math.floor(Math.random()*99); txs.push(tx); saveTxs(txs); renderSide(); }
+  function applyTx(email, type, amount, note='manual'){ const amt = Number(amount); if(type==='deposit'){ changeBalance(email, amt); pushTx({type:'deposit',email,amount:amt,ref:'DEP-'+Date.now(),note,ts:new Date().toISOString()}); } else if(type==='withdraw'){ changeBalance(email, -amt); pushTx({type:'withdraw',email,amount:amt,ref:'WIT-'+Date.now(),note,ts:new Date().toISOString()}); } }
+  function changeBalance(email, delta){ const users = loadUsers(); const u = users.find(x=>x.email===email); if(!u) return; u.balance = Math.round(((u.balance||0) + Number(delta))*100)/100; saveUsers(users); setCurrent(u); }
+  function renderLastTxs(email){ const last = loadTxs().filter(t=> t.email===email || t.to===email ).slice(-6).reverse(); $('#lastTxs').innerHTML = last.length===0? 'Aucune transaction.' : last.map(t=>`<div style="padding:6px;border-bottom:1px dashed rgba(255,255,255,0.03)"><div class="small"><strong>${t.type.toUpperCase()}</strong> ${t.amount?format(t.amount):''}</div><div class="muted-xs">${t.email} ${t.to? '→ '+t.to : ''} • ${new Date(t.ts).toLocaleString()}</div></div>`).join(''); }
+
+  function renderSide(){ const user = currentUser(); const si = $('#sessionInfo'); const side = $('#sideActions'); const mini = $('#miniTx'); if(user){ si.innerHTML = `<div><strong>${user.name}</strong></div><div class="muted-xs">${user.email}</div><div style="height:8px"></div><div class="balance">${format(user.balance)}</div>`; side.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="ghost" onclick="location.hash='#/vault'">Mon coffre</button><button class="ghost" onclick="location.hash='#/txs'">Profil Tx</button><button class="ghost" id="sideLogout">Se déconnecter</button></div>`; document.getElementById('sideLogout')?.addEventListener('click', ()=>{ clearCurrent(); toast('Déconnecté'); router(); }); } else { si.textContent = 'Aucun utilisateur connecté.'; side.innerHTML = `<div style="display:flex;gap:8px"><button class="btn" onclick="location.hash='#/signup'">Créer compte</button><button class="ghost" onclick="location.hash='#/login'">Se connecter</button></div>`; } const txs = loadTxs().slice(-6).reverse(); mini.innerHTML = txs.length===0? 'Aucune transaction.' : txs.map(t=>`<div style="padding:6px;border-bottom:1px dashed rgba(255,255,255,0.03)"><div class="small"><strong>${t.type.toUpperCase()}</strong> ${t.amount?format(t.amount):''}</div><div class="muted-xs">${t.email} ${t.to? '→ '+t.to : ''} • ${new Date(t.ts).toLocaleString()}</div></div>`).join(''); }
+
+  function format(n){ return '$'+Number(n||0).toFixed(2); }
+
+  // boot
+  function boot(){ renderSide(); router(); }
+  boot();
+
+  // expose for console debugging (handy)
+  window.openMonModal = openMonModal;
+  window.simulateMoncash = simulateMoncash;
+});
