@@ -1,0 +1,67 @@
+:root{
+  --bg:#071023;
+  --panel: rgba(255,255,255,0.04);
+  --muted:#9fb0d4;
+  --accent:#ffb703;
+  --accent-2:#fb8500;
+  --ok:#2dd4bf;
+  --danger:#ff6b6b;
+  --glass: rgba(255,255,255,0.03);
+  --radius:14px;
+  --maxw:1100px;
+  --text:#eef6ff;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;background:
+  radial-gradient(800px 500px at 10% 10%, #052533 0%, transparent 30%),
+  linear-gradient(180deg,#071023 0%, #041022 100%); color:var(--text)}
+.wrap{max-width:var(--maxw);margin:28px auto;padding:20px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:22px}
+.brand{display:flex;gap:14px;align-items:center}
+.logo{width:56px;height:56px;border-radius:12px;background:linear-gradient(135deg,var(--accent),var(--accent-2));display:grid;place-items:center;font-weight:900;color:#05101a;font-size:18px}
+.title{line-height:1}
+.title h1{margin:0;font-size:18px}
+.title p{margin:0;color:var(--muted);font-size:13px}
+
+nav{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{background:linear-gradient(90deg,var(--accent),var(--accent-2));color:#071022;padding:10px 14px;border-radius:12px;border:0;cursor:pointer;font-weight:700}
+.ghost{background:transparent;border:1px solid rgba(255,255,255,0.05);padding:8px 12px;border-radius:10px;color:var(--muted);cursor:pointer}
+
+main{display:grid;grid-template-columns:1fr;gap:18px}
+@media(min-width:980px){ main{grid-template-columns:1fr 380px} }
+
+.card{background:var(--panel);padding:16px;border-radius:var(--radius);box-shadow:0 12px 40px rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.02)}
+.muted{color:var(--muted)}
+h2{margin:0 0 8px}
+
+form{display:grid;gap:10px}
+input,select,textarea{padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit}
+label{font-size:13px;color:var(--muted)}
+
+.vault-hero{display:flex;gap:12px;align-items:center}
+.pig-icon{width:84px;height:84px;border-radius:12px;background:linear-gradient(180deg,#fff1cc11,#ffdca211);display:grid;place-items:center;font-size:36px}
+.kv{font-size:13px;color:var(--muted)}
+.balance{font-weight:800;font-size:28px}
+
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.small{font-size:13px}
+.log{font-size:13px;color:var(--muted);max-height:240px;overflow:auto;padding:8px;border-radius:10px;background:linear-gradient(180deg, rgba(255,255,255,0.01), transparent);border:1px dashed rgba(255,255,255,0.02)}
+
+table{width:100%;border-collapse:collapse}
+th,td{padding:8px;text-align:left;border-bottom:1px dashed rgba(255,255,255,0.03)}
+th{color:var(--muted);font-size:13px}
+
+.muted-xs{color:var(--muted);font-size:12px}
+.right{margin-left:auto}
+.chip{display:inline-flex;align-items:center;gap:8px;padding:6px 10px;border-radius:999px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.03)}
+
+footer{margin-top:10px;color:var(--muted);font-size:13px;text-align:center}
+.toast{position:fixed;right:18px;bottom:18px;padding:10px 14px;border-radius:10px;background:#022532;color:#c8fff2;box-shadow:0 10px 30px #0007;display:none;z-index:1200}
+
+/* Modal styles */
+.modal-hidden{display:none;position:fixed;inset:0;background:linear-gradient(180deg,rgba(2,6,23,0.6),rgba(2,6,23,0.85));backdrop-filter:blur(4px);display:grid;place-items:center;z-index:1100}
+.modal-inner{width:min(720px,96vw);padding:20px;background:var(--panel);border-radius:12px}
+.modal-actions{display:flex;gap:8px;margin-top:8px}
+
+/* responsive tweaks */
+@media(max-width:600px){ .logo{width:48px;height:48px} .pig-icon{width:64px;height:64px} }
