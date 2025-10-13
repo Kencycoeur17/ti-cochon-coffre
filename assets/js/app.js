@@ -1,3 +1,9 @@
+// === CONFIG (mettre l'URL de ton server si tu veux activer notifications) ===
+const SERVER_URL = ''; // ex: 'https://ton-serveur.example.com' ou 'http://localhost:3000'
+const SERVER_API_KEY = ''; // correspond à process.env.API_KEY sur le serveur
+// === END CONFIG ===
+
+
 /* assets/js/app.js
    Ti kochon coffre — client SPA logic
    Data: localStorage (users, txs). Session: sessionStorage.
