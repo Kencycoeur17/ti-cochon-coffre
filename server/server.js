@@ -7,6 +7,7 @@ const { createEvent } = require('./events');
 const store = require('./store');
 const { createMailer } = require('./mailer');
 const { requireApiKey, rateLimit } = require('./guards');
+const { computeBalance } = require('./ledger');
 
 const app = express();
 app.use(cors());
