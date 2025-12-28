@@ -107,11 +107,16 @@ app.post(
   }
 );
 
-app.get('/events', requireApiKey(API_KEY), async (req, res) => {
-  const list = await store.list({ limit: 200 });
-  res.json(list);
-});
+app.get('/ledger/:email', requireApiKey(API_KEY), async (req, res) => {
+  const email = req.params.email.toLowerCase();
+  const events = await store.list({ limit: 5000 });
+  const balance = computeBalance(events, email);
 
-app.listen(PORT, () =>
-  console.log(`TiKochon server (prototype) listening on ${PORT}`)
-);
+  return res.json({
+    ok: true,
+    email,
+    balance,
+    currency: 'USD',
+    computedAt: new Date().toISOString()
+  });
+});
