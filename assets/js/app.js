@@ -1,6 +1,9 @@
 // === CONFIG (mettre l'URL de ton server si tu veux activer notifications) ===
 const SERVER_URL = ''; // ex: 'http://localhost:3000'
 const SERVER_API_KEY = ''; // correspond à process.env.API_KEY sur le serveur
+const SERVER_URL = 'http://localhost:3000';
+const SERVER_API_KEY = 'change-me-super-secret';
+
 // === END CONFIG ===
 
 /* assets/js/app.js
@@ -40,6 +43,45 @@ document.addEventListener('DOMContentLoaded', () => {
     return '$' + Number(n || 0).toFixed(2);
   }
 
+  // --- API client (proto+)
+  function apiEnabled() {
+    return Boolean(SERVER_URL && SERVER_API_KEY);
+  }
+
+  async function apiPost(path, body, { timeoutMs = 7000 } = {}) {
+    if (!apiEnabled()) {
+      throw new Error('API disabled');
+    }
+
+    const url = SERVER_URL.replace(/\/$/, '') + path;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': SERVER_API_KEY
+        },
+        body: JSON.stringify(body || {}),
+        signal: ctrl.signal
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const msg = data?.message || `HTTP ${res.status}`;
+        throw new Error(msg);
+      }
+
+      return data;
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
+   
   // --- store (isolé)
   const store = {
     users: {
@@ -318,8 +360,61 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#monForm').addEventListener('submit', (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
-    simulateMoncash(f.to, f.amount || 0, f.ref || 'MC-' + Date.now());
-    closeMonModal();
+     async function simulateMoncash(to, amount, ref) {
+    const dest = store.users.findByEmail(to);
+    if (!dest) {
+      toast('Destinataire introuvable');
+      return;
+    }
+
+    const amt = Number(amount);
+    const reference = ref || 'MC-' + Date.now();
+
+    // 1) Try ONLINE first (server logs + emails)
+    if (apiEnabled()) {
+      try {
+        await apiPost('/moncash', { to: dest.email, amount: amt, ref: reference });
+
+        // Apply locally as authoritative “credited”
+        const ev = ledger.addEvent({
+          kind: 'MONCASH',
+          actor: dest.email,
+          amount: amt,
+          currency: 'USD',
+          ref: reference,
+          note: 'MonCash inbound (server-notified)',
+          createdAt: isoNow(),
+          source: 'server'
+        });
+
+        setCurrent(store.users.findByEmail(dest.email));
+        toast(`MonCash (serveur): +${format(ev.amount)}`);
+        router();
+        return;
+      } catch (err) {
+        console.warn('[moncash] server failed, fallback local:', err);
+        toast('Serveur indisponible — fallback local');
+        // fallback continues below
+      }
+    }
+
+    // 2) OFFLINE fallback (local simulation)
+    const ev = ledger.addEvent({
+      kind: 'MONCASH',
+      actor: dest.email,
+      amount: amt,
+      currency: 'USD',
+      ref: reference,
+      note: 'MonCash simulated inbound (local)',
+      createdAt: isoNow(),
+      source: 'client'
+    });
+
+    setCurrent(store.users.findByEmail(dest.email));
+    toast(`MonCash simulé: +${format(ev.amount)}`);
+    router();
+  }
+
   });
 
   // --- business actions
@@ -422,7 +517,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       const user = { id: Date.now(), name: f.name, email, pass: fauxHash(f.password), balance: 0 };
-      store.users.upsert(user);
+            store.users.upsert(user);
 
       ledger.addEvent({
         kind: 'SIGNUP',
@@ -434,9 +529,17 @@ document.addEventListener('DOMContentLoaded', () => {
         source: 'client'
       });
 
+      // notify server (best effort) — does not block UX
+      if (apiEnabled()) {
+        apiPost('/notify/signup', { name: user.name, email: user.email })
+          .then(() => console.info('[signup] notified server'))
+          .catch((err) => console.warn('[signup] notify failed:', err));
+      }
+
       setCurrent(user);
       toast('Compte créé');
       location.hash = '#/vault';
+
     });
   }
 
