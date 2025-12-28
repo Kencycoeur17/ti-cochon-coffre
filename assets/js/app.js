@@ -146,6 +146,21 @@ document.addEventListener('DOMContentLoaded', () => {
     renderSide();
   }
 
+async function fetchServerBalance(email) {
+  if (!apiEnabled()) return null;
+  try {
+    const res = await fetch(
+      SERVER_URL.replace(/\/$/, '') + '/ledger/' + encodeURIComponent(email),
+      { headers: { 'x-api-key': SERVER_API_KEY } }
+    );
+    const data = await res.json();
+    return data?.balance ?? null;
+  } catch {
+    return null;
+  }
+}
+
+   
   // --- Event model (v2)
   // kind: 'SEED' | 'SIGNUP' | 'LOGIN' | 'DEPOSIT' | 'WITHDRAW' | 'P2P' | 'MONCASH'
   // actor: email
