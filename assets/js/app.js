@@ -1,69 +1,360 @@
 // === CONFIG (mettre l'URL de ton server si tu veux activer notifications) ===
-const SERVER_URL = ''; // ex: 'https://ton-serveur.example.com' ou 'http://localhost:3000'
+const SERVER_URL = ''; // ex: 'http://localhost:3000'
 const SERVER_API_KEY = ''; // correspond à process.env.API_KEY sur le serveur
 // === END CONFIG ===
 
-
 /* assets/js/app.js
    Ti kochon coffre — client SPA logic
-   Data: localStorage (users, txs). Session: sessionStorage.
+   Data: localStorage (users, events). Session: sessionStorage.
+   ✅ Refactor PRO:
+   - Ledger central (seule source de vérité pour soldes + événements)
+   - Modèle d'événement normalisé
+   - Migration automatique des tx legacy (v1) vers events (v2)
 */
-document.addEventListener('DOMContentLoaded', ()=>{
-
-  // short selectors
-  const $ = s => document.querySelector(s);
+document.addEventListener('DOMContentLoaded', () => {
+  // --- short selectors
+  const $ = (s) => document.querySelector(s);
   const toastEl = $('#toast');
-  function toast(msg, ms=2400){ toastEl.textContent = msg; toastEl.style.display='block'; setTimeout(()=> toastEl.style.display='none', ms); }
-
-  // keys
-  const K_USERS = 'tk_users_v1';
-  const K_TXS = 'tk_txs_v1';
-  const K_SESSION = 'tk_session_v1';
-
-  const fauxHash = p => btoa(p.split('').reverse().join(''));
-
-  function loadUsers(){ try{return JSON.parse(localStorage.getItem(K_USERS)||'[]')}catch(e){return []} }
-  function saveUsers(u){ localStorage.setItem(K_USERS, JSON.stringify(u)) }
-  function loadTxs(){ try{return JSON.parse(localStorage.getItem(K_TXS)||'[]')}catch(e){return []} }
-  function saveTxs(t){ localStorage.setItem(K_TXS, JSON.stringify(t)) }
-  function currentUser(){ return JSON.parse(sessionStorage.getItem(K_SESSION)||'null') }
-  function setCurrent(u){ sessionStorage.setItem(K_SESSION, JSON.stringify(u)); renderSide(); }
-  function clearCurrent(){ sessionStorage.removeItem(K_SESSION); renderSide(); }
-
-  // init demo
-  (function initData(){ if(loadUsers().length===0){
-    const demo = {id:1,name:'Demo User',email:'demo@fiaxy.test',pass:fauxHash('demo123'),balance:25.00};
-    saveUsers([demo]);
-    saveTxs([{id:Date.now(),type:'seed',email:demo.email,amount:25,ref:'INIT',note:'Compte demo créé',ts:new Date().toISOString()}]);
-  } renderSide(); })();
-
-  // router
-  const routes = {'/':home,'/vault':vault,'/p2p':p2p,'/txs':txs,'/signup':signup,'/login':login};
-  window.addEventListener('hashchange', router);
-
-  // wire static nav buttons
-  document.querySelectorAll('[data-link]').forEach(b=> b.addEventListener('click', e=>{ e.preventDefault(); location.hash = b.dataset.link; }));
-  $('#ctaAuth').addEventListener('click', ()=>{ if(currentUser()){ clearCurrent(); toast('Déconnecté'); } else location.hash = '#/login'; });
-
-  // modal open/close
-  const monModal = $('#monModal');
-  function openMonModal(){ monModal.classList.remove('modal-hidden'); monModal.style.display='grid'; }
-  function closeMonModal(){ monModal.style.display='none'; monModal.classList.add('modal-hidden'); }
-  $('#closeMon').addEventListener('click', closeMonModal);
-  $('#monForm').addEventListener('submit', (e)=>{ e.preventDefault(); const f = Object.fromEntries(new FormData(e.target)); simulateMoncash(f.to,f.amount||0,f.ref||('MC-'+Date.now())); closeMonModal(); });
-
-  function simulateMoncash(to, amount, ref){
-    const users = loadUsers(); const u = users.find(x=>x.email===to.toLowerCase());
-    if(!u){ toast('Destinataire introuvable'); return; }
-    u.balance = Math.round(((u.balance||0) + Number(amount))*100)/100; saveUsers(users);
-    pushTx({type:'moncash',email:u.email,amount:Number(amount),ref,ts:new Date().toISOString(),note:'MonCash simulated inbound'});
-    setCurrent(u); toast(`MonCash simulé: +${format(amount)}`);
+  function toast(msg, ms = 2400) {
+    toastEl.textContent = msg;
+    toastEl.style.display = 'block';
+    setTimeout(() => (toastEl.style.display = 'none'), ms);
   }
 
-  // render functions (views)
-  function router(){ const path = location.hash.replace('#','')||'/'; const fn = routes[path]||notfound; $('#view').innerHTML=''; fn(); }
+  // --- storage keys
+  const K_USERS = 'tk_users_v1';
+  const K_EVENTS = 'tk_txs_v1'; // on conserve la clé pour compat rétro (migrée en place)
+  const K_SESSION = 'tk_session_v1';
+  const K_SCHEMA = 'tk_schema_v1';
 
-  function home(){
+  // --- utils
+  const fauxHash = (p) => btoa(p.split('').reverse().join(''));
+  const isoNow = () => new Date().toISOString();
+  const rnd = (n = 12) =>
+    Array.from(crypto?.getRandomValues?.(new Uint8Array(n)) || Array.from({ length: n }, () => Math.floor(Math.random() * 256)))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+  const uid = (prefix = 'EV') => `${prefix}-${Date.now()}-${rnd(6)}`;
+
+  function format(n) {
+    return '$' + Number(n || 0).toFixed(2);
+  }
+
+  // --- store (isolé)
+  const store = {
+    users: {
+      get() {
+        try {
+          return JSON.parse(localStorage.getItem(K_USERS) || '[]');
+        } catch {
+          return [];
+        }
+      },
+      set(list) {
+        localStorage.setItem(K_USERS, JSON.stringify(list));
+      },
+      findByEmail(email) {
+        const e = (email || '').toLowerCase();
+        return this.get().find((u) => u.email === e) || null;
+      },
+      upsert(user) {
+        const list = this.get();
+        const idx = list.findIndex((u) => u.email === user.email);
+        if (idx >= 0) list[idx] = user;
+        else list.push(user);
+        this.set(list);
+      }
+    },
+    events: {
+      getRaw() {
+        try {
+          return JSON.parse(localStorage.getItem(K_EVENTS) || '[]');
+        } catch {
+          return [];
+        }
+      },
+      set(list) {
+        localStorage.setItem(K_EVENTS, JSON.stringify(list));
+      }
+    },
+    schema: {
+      get() {
+        return localStorage.getItem(K_SCHEMA) || '1';
+      },
+      set(v) {
+        localStorage.setItem(K_SCHEMA, String(v));
+      }
+    }
+  };
+
+  // --- session
+  function currentUser() {
+    try {
+      return JSON.parse(sessionStorage.getItem(K_SESSION) || 'null');
+    } catch {
+      return null;
+    }
+  }
+  function setCurrent(u) {
+    sessionStorage.setItem(K_SESSION, JSON.stringify(u));
+    renderSide();
+  }
+  function clearCurrent() {
+    sessionStorage.removeItem(K_SESSION);
+    renderSide();
+  }
+
+  // --- Event model (v2)
+  // kind: 'SEED' | 'SIGNUP' | 'LOGIN' | 'DEPOSIT' | 'WITHDRAW' | 'P2P' | 'MONCASH'
+  // actor: email
+  // counterparty?: email
+  // amount?: number
+  // currency: 'USD'
+  // ref: string
+  // note?: string
+  // createdAt: ISO
+  // source: 'client' | 'server'
+  function normalizeEvent(ev) {
+    // if already in v2 shape, keep but ensure minimal fields
+    if (ev && ev.kind && ev.actor && ev.createdAt) {
+      return {
+        id: ev.id || uid('EV'),
+        kind: ev.kind,
+        actor: String(ev.actor).toLowerCase(),
+        counterparty: ev.counterparty ? String(ev.counterparty).toLowerCase() : undefined,
+        amount: ev.amount === undefined ? undefined : Number(ev.amount),
+        currency: ev.currency || 'USD',
+        ref: ev.ref || uid('REF'),
+        note: ev.note || '',
+        createdAt: ev.createdAt,
+        source: ev.source || 'client'
+      };
+    }
+
+    // legacy tx (v1)
+    const t = ev || {};
+    const legacyType = String(t.type || '').toLowerCase();
+
+    const mapKind = {
+      seed: 'SEED',
+      signup: 'SIGNUP',
+      login: 'LOGIN',
+      deposit: 'DEPOSIT',
+      withdraw: 'WITHDRAW',
+      p2p: 'P2P',
+      moncash: 'MONCASH'
+    };
+
+    const kind = mapKind[legacyType] || 'DEPOSIT';
+    const actor = String(t.email || '').toLowerCase();
+    const counterparty = t.to ? String(t.to).toLowerCase() : undefined;
+
+    return {
+      id: String(t.id || uid('EV')),
+      kind,
+      actor,
+      counterparty,
+      amount: t.amount === undefined ? undefined : Number(t.amount),
+      currency: 'USD',
+      ref: String(t.ref || uid('REF')),
+      note: String(t.note || ''),
+      createdAt: t.ts || isoNow(),
+      source: 'client'
+    };
+  }
+
+  function migrateLegacyTxsToEvents() {
+    // Idempotent: safe to run multiple times
+    const raw = store.events.getRaw();
+    if (!Array.isArray(raw)) {
+      store.events.set([]);
+      store.schema.set('2');
+      return;
+    }
+
+    // If schema already marked 2, still normalize defensively
+    const migrated = raw.map(normalizeEvent);
+
+    // Remove obvious duplicates by id (keep first occurrence)
+    const seen = new Set();
+    const dedup = [];
+    for (const ev of migrated) {
+      if (!ev || !ev.id) continue;
+      if (seen.has(ev.id)) continue;
+      seen.add(ev.id);
+      dedup.push(ev);
+    }
+
+    store.events.set(dedup);
+    store.schema.set('2');
+  }
+ // --- Ledger central (seule porte qui modifie balances + écrit événements)
+  const ledger = {
+    getEvents() {
+      migrateLegacyTxsToEvents();
+      return store.events.getRaw().map(normalizeEvent);
+    },
+    addEvent(ev) {
+      const list = this.getEvents();
+      const normalized = normalizeEvent(ev);
+
+      // Persist event first (audit trail), then apply state
+      list.push(normalized);
+      store.events.set(list);
+
+      // Apply to balances when relevant
+      this.applyToBalances(normalized);
+
+      // Refresh side UI
+      renderSide();
+      return normalized;
+    },
+    applyToBalances(ev) {
+      const kind = ev.kind;
+      const amt = ev.amount === undefined ? 0 : Number(ev.amount);
+
+      if (kind === 'LOGIN') return; // no balance change
+      if (kind === 'SIGNUP') return; // no balance change
+
+      if (kind === 'SEED') {
+        // legacy seed used to set initial balance via event amount (optional)
+        if (!ev.actor) return;
+        this.changeBalance(ev.actor, amt);
+        return;
+      }
+
+      if (kind === 'DEPOSIT' || kind === 'MONCASH') {
+        this.changeBalance(ev.actor, Math.abs(amt));
+        return;
+      }
+
+      if (kind === 'WITHDRAW') {
+        this.changeBalance(ev.actor, -Math.abs(amt));
+        return;
+      }
+
+      if (kind === 'P2P') {
+        const to = ev.counterparty;
+        if (!to) return;
+        this.changeBalance(ev.actor, -Math.abs(amt));
+        this.changeBalance(to, Math.abs(amt));
+        return;
+      }
+    },
+    changeBalance(email, delta) {
+      const users = store.users.get();
+      const u = users.find((x) => x.email === String(email).toLowerCase());
+      if (!u) return;
+
+      u.balance = Math.round(((u.balance || 0) + Number(delta)) * 100) / 100;
+      store.users.set(users);
+
+      // If current session matches, refresh session data
+      const cu = currentUser();
+      if (cu && cu.email === u.email) setCurrent(u);
+    },
+    getUser(email) {
+      return store.users.findByEmail(email);
+    },
+    historyFor(email) {
+      const e = String(email).toLowerCase();
+      return this.getEvents().filter((ev) => ev.actor === e || ev.counterparty === e);
+    }
+  };
+
+  // --- init demo data
+  (function initData() {
+    migrateLegacyTxsToEvents();
+
+    if (store.users.get().length === 0) {
+      const demo = { id: 1, name: 'Demo User', email: 'demo@fiaxy.test', pass: fauxHash('demo123'), balance: 25.0 };
+      store.users.set([demo]);
+
+      ledger.addEvent({
+        id: uid('EV'),
+        kind: 'SEED',
+        actor: demo.email,
+        amount: 25,
+        currency: 'USD',
+        ref: 'INIT',
+        note: 'Compte demo créé',
+        createdAt: isoNow(),
+        source: 'client'
+      });
+    }
+
+    renderSide();
+  })();
+
+  // --- router
+  const routes = { '/': home, '/vault': vault, '/p2p': p2p, '/txs': txs, '/signup': signup, '/login': login };
+  window.addEventListener('hashchange', router);
+
+  document.querySelectorAll('[data-link]').forEach((b) =>
+    b.addEventListener('click', (e) => {
+      e.preventDefault();
+      location.hash = b.dataset.link;
+    })
+  );
+
+  $('#ctaAuth').addEventListener('click', () => {
+    if (currentUser()) {
+      clearCurrent();
+      toast('Déconnecté');
+    } else location.hash = '#/login';
+  });
+
+  // --- modal open/close
+  const monModal = $('#monModal');
+  function openMonModal() {
+    monModal.classList.remove('modal-hidden');
+    monModal.style.display = 'grid';
+  }
+  function closeMonModal() {
+    monModal.style.display = 'none';
+    monModal.classList.add('modal-hidden');
+  }
+  $('#closeMon').addEventListener('click', closeMonModal);
+  $('#monForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const f = Object.fromEntries(new FormData(e.target));
+    simulateMoncash(f.to, f.amount || 0, f.ref || 'MC-' + Date.now());
+    closeMonModal();
+  });
+
+  // --- business actions
+  function simulateMoncash(to, amount, ref) {
+    const dest = store.users.findByEmail(to);
+    if (!dest) {
+      toast('Destinataire introuvable');
+      return;
+    }
+
+    const ev = ledger.addEvent({
+      kind: 'MONCASH',
+      actor: dest.email,
+      amount: Number(amount),
+      currency: 'USD',
+      ref: ref || uid('MC'),
+      note: 'MonCash simulated inbound',
+      createdAt: isoNow(),
+      source: 'client'
+    });
+  // Keep current session aligned to credited account (as before)
+    setCurrent(store.users.findByEmail(dest.email));
+    toast(`MonCash simulé: +${format(ev.amount)}`);
+    router();
+  }
+
+  // --- render functions (views)
+  function router() {
+    const path = location.hash.replace('#', '') || '/';
+    const fn = routes[path] || notfound;
+    $('#view').innerHTML = '';
+    fn();
+  }
+
+  function home() {
     $('#view').innerHTML = `
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
         <div style="flex:1;min-width:260px" class="card">
@@ -106,7 +397,7 @@ document.addEventListener('DOMContentLoaded', ()=>{
     `;
   }
 
-  function signup(){
+  function signup() {
     $('#view').innerHTML = `
       <h2>Créer un compte</h2>
       <form id="signupForm" class="small">
@@ -119,10 +410,37 @@ document.addEventListener('DOMContentLoaded', ()=>{
         </div>
       </form>
     `;
-    $('#signupForm').addEventListener('submit', e=>{ e.preventDefault(); const f=Object.fromEntries(new FormData(e.target)); const users=loadUsers(); if(users.some(u=>u.email===f.email.toLowerCase())){ toast('Email déjà utilisé'); return; } const user={id:Date.now(),name:f.name,email:f.email.toLowerCase(),pass:fauxHash(f.password),balance:0}; users.push(user); saveUsers(users); pushTx({type:'seed',email:user.email,amount:0,ref:'SIGNUP',ts:new Date().toISOString(),note:'Compte créé'}); setCurrent(user); toast('Compte créé'); location.hash='#/vault'; });
+
+    $('#signupForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      const email = String(f.email || '').toLowerCase();
+      const users = store.users.get();
+      if (users.some((u) => u.email === email)) {
+        toast('Email déjà utilisé');
+        return;
+      }
+
+      const user = { id: Date.now(), name: f.name, email, pass: fauxHash(f.password), balance: 0 };
+      store.users.upsert(user);
+
+      ledger.addEvent({
+        kind: 'SIGNUP',
+        actor: user.email,
+        currency: 'USD',
+        ref: 'SIGNUP',
+        note: 'Compte créé',
+        createdAt: isoNow(),
+        source: 'client'
+      });
+
+      setCurrent(user);
+      toast('Compte créé');
+      location.hash = '#/vault';
+    });
   }
 
-  function login(){
+  function login() {
     $('#view').innerHTML = `
       <h2>Connexion</h2>
       <form id="loginForm" class="small">
@@ -134,13 +452,48 @@ document.addEventListener('DOMContentLoaded', ()=>{
         </div>
       </form>
     `;
-    $('#loginForm').addEventListener('submit', e=>{ e.preventDefault(); const f=Object.fromEntries(new FormData(e.target)); const users=loadUsers(); const found=users.find(u=>u.email===f.email.toLowerCase() && u.pass===fauxHash(f.password)); if(!found){ toast('Identifiants incorrects'); return; } setCurrent(found); pushTx({type:'login',email:found.email,ts:new Date().toISOString(),note:'Connexion'}); toast('Connecté'); location.hash='#/vault'; });
+
+    $('#loginForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      const email = String(f.email || '').toLowerCase();
+      const found = store.users.get().find((u) => u.email === email && u.pass === fauxHash(f.password));
+      if (!found) {
+        toast('Identifiants incorrects');
+        return;
+      }
+
+      setCurrent(found);
+
+      ledger.addEvent({
+        kind: 'LOGIN',
+        actor: found.email,
+        currency: 'USD',
+        ref: 'LOGIN-' + Date.now(),
+        note: 'Connexion',
+        createdAt: isoNow(),
+        source: 'client'
+      });
+
+      toast('Connecté');
+      location.hash = '#/vault';
+    });
   }
 
-  function vault(){
-    const user = currentUser(); 
-    if(!user){ $('#view').innerHTML = `<h2>Accès au coffre</h2><p class="muted">Tu dois te connecter pour gérer ton coffre.</p><div style="margin-top:8px"><button class="btn" onclick="location.hash='#/login'">Se connecter</button></div>`; return; }
-    const users = loadUsers(); const me = users.find(x=>x.email===user.email) || user; setCurrent(me);
+  function vault() {
+    const user = currentUser();
+    if (!user) {
+      $('#view').innerHTML = `
+        <h2>Accès au coffre</h2>
+        <p class="muted">Tu dois te connecter pour gérer ton coffre.</p>
+        <div style="margin-top:8px"><button class="btn" onclick="location.hash='#/login'">Se connecter</button></div>
+      `;
+      return;
+    }
+
+    const me = store.users.findByEmail(user.email) || user;
+    setCurrent(me);
+
     $('#view').innerHTML = `
       <div style="display:flex;gap:12px;flex-wrap:wrap">
         <div style="flex:1;min-width:300px">
@@ -184,16 +537,72 @@ document.addEventListener('DOMContentLoaded', ()=>{
         </div>
       </div>
     `;
-    $('#openMonBtn').addEventListener('click', ()=> openMonModal());
-    $('#logoutBtn').addEventListener('click', ()=>{ clearCurrent(); toast('Déconnecté'); router(); });
-    $('#manualForm').addEventListener('submit', e=>{ e.preventDefault(); const f=Object.fromEntries(new FormData(e.target)); const amt=Number(f.amount); if(f.type==='withdraw' && amt > me.balance){ toast('Solde insuffisant'); return; } applyTx(me.email, f.type, amt, 'manual'); toast('Transaction ok'); router(); });
-    $('#clearTxs').addEventListener('click', ()=>{ localStorage.removeItem(K_TXS); toast('Historique effacé'); renderSide(); router(); });
-    renderLastTxs(me.email);
+
+    $('#openMonBtn').addEventListener('click', () => openMonModal());
+    $('#logoutBtn').addEventListener('click', () => {
+      clearCurrent();
+      toast('Déconnecté');
+      router();
+    });
+
+    $('#manualForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+      const amt = Number(f.amount);
+
+      const latestMe = store.users.findByEmail(me.email) || me;
+      if (f.type === 'withdraw' && amt > (latestMe.balance || 0)) {
+        toast('Solde insuffisant');
+        return;
+      }
+
+      if (f.type === 'deposit') {
+        ledger.addEvent({
+          kind: 'DEPOSIT',
+          actor: latestMe.email,
+          amount: amt,
+          currency: 'USD',
+          ref: 'DEP-' + Date.now(),
+          note: 'manual',
+          createdAt: isoNow(),
+          source: 'client'
+        });
+      } else {
+        ledger.addEvent({
+          kind: 'WITHDRAW',
+          actor: latestMe.email,
+          amount: amt,
+          currency: 'USD',
+          ref: 'WIT-' + Date.now(),
+          note: 'manual',
+          createdAt: isoNow(),
+          source: 'client'
+        });
+      }
+
+      toast('Transaction ok');
+      router();
+    });
+
+    $('#clearTxs').addEventListener('click', () => {
+      localStorage.removeItem(K_EVENTS);
+      store.schema.set('1');
+      migrateLegacyTxsToEvents();
+      toast('Historique effacé');
+      renderSide();
+      router();
+    });
+
+    renderLastEvents(me.email);
   }
 
-  function p2p(){
+  function p2p() {
     const user = currentUser();
-    if(!user){ $('#view').innerHTML = `<h2>Transfert P2P</h2><p class="muted">Connecte-toi pour transférer vers un autre compte.</p>`; return; }
+    if (!user) {
+      $('#view').innerHTML = `<h2>Transfert P2P</h2><p class="muted">Connecte-toi pour transférer vers un autre compte.</p>`;
+      return;
+    }
+
     $('#view').innerHTML = `
       <h2>Transfert P2P</h2>
       <form id="p2pForm" class="small card">
@@ -203,13 +612,66 @@ document.addEventListener('DOMContentLoaded', ()=>{
         <div style="display:flex;gap:8px;margin-top:8px"><button class="btn" type="submit">Transférer</button></div>
       </form>
     `;
-    $('#p2pForm').addEventListener('submit', e=>{ e.preventDefault(); const f=Object.fromEntries(new FormData(e.target)); const me=currentUser(); const users=loadUsers(); const to = users.find(u=>u.email===f.to.toLowerCase()); if(!to){ toast('Destinataire non trouvé'); return; } const amt=Number(f.amount); if(amt > me.balance){ toast('Solde insuffisant'); return; } changeBalance(me.email, -amt); changeBalance(to.email, amt); pushTx({type:'p2p',email:me.email,to:to.email,amount:amt,ref:'P2P-'+Date.now(),note:f.note||'p2p',ts:new Date().toISOString()}); toast('Transfert effectué'); renderSide(); router(); });
+
+    $('#p2pForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const f = Object.fromEntries(new FormData(e.target));
+
+      const me = store.users.findByEmail(currentUser().email);
+      const to = store.users.findByEmail(f.to);
+      if (!to) {
+        toast('Destinataire non trouvé');
+        return;
+      }
+
+      const amt = Number(f.amount);
+      if (amt > (me?.balance || 0)) {
+        toast('Solde insuffisant');
+        return;
+      }
+
+      ledger.addEvent({
+        kind: 'P2P',
+        actor: me.email,
+        counterparty: to.email,
+        amount: amt,
+        currency: 'USD',
+        ref: 'P2P-' + Date.now(),
+        note: f.note || 'p2p',
+        createdAt: isoNow(),
+        source: 'client'
+      });
+
+      toast('Transfert effectué');
+      renderSide();
+      router();
+    });
   }
 
-  function txs(){
+  function txs() {
     const user = currentUser();
-    if(!user){ $('#view').innerHTML = `<h2>Profil transaction</h2><p class="muted">Connecte-toi pour voir ton historique.</p>`; return; }
-    const txsAll = loadTxs().filter(t=> t.email===user.email || t.to===user.email ).sort((a,b)=> new Date(b.ts)-new Date(a.ts));
+    if (!user) {
+      $('#view').innerHTML = `<h2>Profil transaction</h2><p class="muted">Connecte-toi pour voir ton historique.</p>`;
+      return;
+    }
+
+    const list = ledger
+      .historyFor(user.email)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+    const prettyKind = (k) => {
+      const m = {
+        SEED: 'seed',
+        SIGNUP: 'signup',
+        LOGIN: 'login',
+        DEPOSIT: 'deposit',
+        WITHDRAW: 'withdraw',
+        P2P: 'p2p',
+        MONCASH: 'moncash'
+      };
+      return m[k] || k;
+    };
+
     $('#view').innerHTML = `
       <h2>Profil de transaction — ${user.name}</h2>
       <div style="height:12px"></div>
@@ -217,36 +679,113 @@ document.addEventListener('DOMContentLoaded', ()=>{
         <table>
           <thead><tr><th>Type</th><th>Montant</th><th>Contrepartie</th><th>Référence</th><th>Heure</th></tr></thead>
           <tbody>
-            ${txsAll.slice(0,40).map(t=>`<tr>
-              <td>${t.type}</td>
-              <td>${t.amount? format(t.amount) : '-'}</td>
-              <td>${t.to? t.to : (t.email===user.email? '—' : t.email)}</td>
-              <td>${t.ref||''}</td>
-              <td>${new Date(t.ts).toLocaleString()}</td>
-            </tr>`).join('')}
+            ${list.slice(0, 40).map((t) => `
+              <tr>
+                <td>${prettyKind(t.kind)}</td>
+                <td>${t.amount !== undefined ? format(t.amount) : '-'}</td>
+                <td>${t.counterparty ? t.counterparty : '—'}</td>
+                <td>${t.ref || ''}</td>
+                <td>${new Date(t.createdAt).toLocaleString()}</td>
+              </tr>
+            `).join('')}
           </tbody>
         </table>
       </div>
     `;
   }
 
-  function notfound(){ $('#view').innerHTML = `<h2>404</h2><p class="muted">Page introuvable</p>` }
+  function notfound() {
+    $('#view').innerHTML = `<h2>404</h2><p class="muted">Page introuvable</p>`;
+  }
 
-  // tx helpers
-  function pushTx(tx){ const txs = loadTxs(); tx.id = Date.now() + Math.floor(Math.random()*99); txs.push(tx); saveTxs(txs); renderSide(); }
-  function applyTx(email, type, amount, note='manual'){ const amt = Number(amount); if(type==='deposit'){ changeBalance(email, amt); pushTx({type:'deposit',email,amount:amt,ref:'DEP-'+Date.now(),note,ts:new Date().toISOString()}); } else if(type==='withdraw'){ changeBalance(email, -amt); pushTx({type:'withdraw',email,amount:amt,ref:'WIT-'+Date.now(),note,ts:new Date().toISOString()}); } }
-  function changeBalance(email, delta){ const users = loadUsers(); const u = users.find(x=>x.email===email); if(!u) return; u.balance = Math.round(((u.balance||0) + Number(delta))*100)/100; saveUsers(users); setCurrent(u); }
-  function renderLastTxs(email){ const last = loadTxs().filter(t=> t.email===email || t.to===email ).slice(-6).reverse(); $('#lastTxs').innerHTML = last.length===0? 'Aucune transaction.' : last.map(t=>`<div style="padding:6px;border-bottom:1px dashed rgba(255,255,255,0.03)"><div class="small"><strong>${t.type.toUpperCase()}</strong> ${t.amount?format(t.amount):''}</div><div class="muted-xs">${t.email} ${t.to? '→ '+t.to : ''} • ${new Date(t.ts).toLocaleString()}</div></div>`).join(''); }
+  // --- UI helpers
+  function renderLastEvents(email) {
+    const last = ledger
+      .historyFor(email)
+      .slice(-6)
+      .reverse();
 
-  function renderSide(){ const user = currentUser(); const si = $('#sessionInfo'); const side = $('#sideActions'); const mini = $('#miniTx'); if(user){ si.innerHTML = `<div><strong>${user.name}</strong></div><div class="muted-xs">${user.email}</div><div style="height:8px"></div><div class="balance">${format(user.balance)}</div>`; side.innerHTML = `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="ghost" onclick="location.hash='#/vault'">Mon coffre</button><button class="ghost" onclick="location.hash='#/txs'">Profil Tx</button><button class="ghost" id="sideLogout">Se déconnecter</button></div>`; document.getElementById('sideLogout')?.addEventListener('click', ()=>{ clearCurrent(); toast('Déconnecté'); router(); }); } else { si.textContent = 'Aucun utilisateur connecté.'; side.innerHTML = `<div style="display:flex;gap:8px"><button class="btn" onclick="location.hash='#/signup'">Créer compte</button><button class="ghost" onclick="location.hash='#/login'">Se connecter</button></div>`; } const txs = loadTxs().slice(-6).reverse(); mini.innerHTML = txs.length===0? 'Aucune transaction.' : txs.map(t=>`<div style="padding:6px;border-bottom:1px dashed rgba(255,255,255,0.03)"><div class="small"><strong>${t.type.toUpperCase()}</strong> ${t.amount?format(t.amount):''}</div><div class="muted-xs">${t.email} ${t.to? '→ '+t.to : ''} • ${new Date(t.ts).toLocaleString()}</div></div>`).join(''); }
+    const prettyKind = (k) => {
+      const m = { SEED: 'SEED', SIGNUP: 'SIGNUP', LOGIN: 'LOGIN', DEPOSIT: 'DEPOSIT', WITHDRAW: 'WITHDRAW', P2P: 'P2P', MONCASH: 'MONCASH' };
+      return m[k] || k;
+    };
 
-  function format(n){ return '$'+Number(n||0).toFixed(2); }
+    $('#lastTxs').innerHTML =
+      last.length === 0
+        ? 'Aucune transaction.'
+        : last
+            .map(
+              (t) => `
+            <div style="padding:6px;border-bottom:1px dashed rgba(255,255,255,0.03)">
+              <div class="small"><strong>${prettyKind(t.kind)}</strong> ${t.amount !== undefined ? format(t.amount) : ''}</div>
+              <div class="muted-xs">${t.actor} ${t.counterparty ? '→ ' + t.counterparty : ''} • ${new Date(t.createdAt).toLocaleString()}</div>
+            </div>`
+            )
+            .join('');
+  }
 
-  // boot
-  function boot(){ renderSide(); router(); }
+  function renderSide() {
+    const user = currentUser();
+    const si = $('#sessionInfo');
+    const side = $('#sideActions');
+    const mini = $('#miniTx');
+
+    if (user) {
+      const fresh = store.users.findByEmail(user.email) || user;
+      si.innerHTML = `
+        <div><strong>${fresh.name}</strong></div>
+        <div class="muted-xs">${fresh.email}</div>
+        <div style="height:8px"></div>
+        <div class="balance">${format(fresh.balance)}</div>
+      `;
+
+      side.innerHTML = `
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="ghost" onclick="location.hash='#/vault'">Mon coffre</button>
+          <button class="ghost" onclick="location.hash='#/txs'">Profil Tx</button>
+          <button class="ghost" id="sideLogout">Se déconnecter</button>
+        </div>
+      `;
+
+      document.getElementById('sideLogout')?.addEventListener('click', () => {
+        clearCurrent();
+        toast('Déconnecté');
+        router();
+      });
+    } else {
+      si.textContent = 'Aucun utilisateur connecté.';
+      side.innerHTML = `
+        <div style="display:flex;gap:8px">
+          <button class="btn" onclick="location.hash='#/signup'">Créer compte</button>
+          <button class="ghost" onclick="location.hash='#/login'">Se connecter</button>
+        </div>
+      `;
+    }
+
+    const txs = ledger.getEvents().slice(-6).reverse();
+    mini.innerHTML =
+      txs.length === 0
+        ? 'Aucune transaction.'
+        : txs
+            .map(
+              (t) => `
+            <div style="padding:6px;border-bottom:1px dashed rgba(255,255,255,0.03)">
+              <div class="small"><strong>${t.kind}</strong> ${t.amount !== undefined ? format(t.amount) : ''}</div>
+              <div class="muted-xs">${t.actor} ${t.counterparty ? '→ ' + t.counterparty : ''} • ${new Date(t.createdAt).toLocaleString()}</div>
+            </div>`
+            )
+            .join('');
+  }
+
+  // --- boot
+  function boot() {
+    renderSide();
+    router();
+  }
   boot();
 
   // expose for console debugging (handy)
   window.openMonModal = openMonModal;
   window.simulateMoncash = simulateMoncash;
+  window.ledger = ledger;
 });
