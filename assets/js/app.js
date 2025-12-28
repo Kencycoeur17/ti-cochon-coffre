@@ -412,6 +412,14 @@ async function fetchServerBalance(email) {
         // fallback continues below
       }
     }
+        fetchServerBalance(me.email).then((b) => {
+  if (typeof b === 'number') {
+    me.balance = b;
+    store.users.upsert(me);
+    setCurrent(me);
+  }
+});
+
 
     // 2) OFFLINE fallback (local simulation)
     const ev = ledger.addEvent({
