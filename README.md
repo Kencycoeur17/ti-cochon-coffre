@@ -7,6 +7,24 @@
 
 ---
 
+## 🌐 Preview rapide
+
+Quand GitHub Pages est activé sur le repo, le frontend statique peut être testé ici :
+
+```txt
+https://kencycoeur17.github.io/ti-cochon-coffre/
+```
+
+Pour activer GitHub Pages :
+
+```txt
+GitHub Repo → Settings → Pages → Build and deployment → Source: Deploy from a branch → Branch: main / root → Save
+```
+
+Un fichier `.nojekyll` est présent à la racine pour éviter que GitHub Pages ne filtre certains fichiers statiques.
+
+---
+
 ## 🎯 Vision
 
 Beaucoup de petites caisses, groupes d'épargne, familles, clubs, agents et communautés gèrent encore leurs mouvements d'argent via WhatsApp, cahiers, notes ou mémoire.
@@ -64,6 +82,7 @@ Mot de passe: demo123
 ```txt
 ti-cochon-coffre/
 ├─ index.html
+├─ .nojekyll
 ├─ assets/
 │  ├─ css/
 │  │  ├─ style.css
