@@ -1,6 +1,6 @@
 # 🐷 Ti Cochon Coffre
 
-**Ti Cochon Coffre** est un prototype fintech local-first devenu un **MVP serveur testable** avec SQLite, authentification serveur, ledger backend, transactions protégées et simulation MonCash.
+**Ti Cochon Coffre** est un prototype fintech local-first devenu un **MVP serveur testable** avec SQLite, authentification serveur, ledger backend, transactions protégées, dashboard admin minimal et simulation MonCash.
 
 > ⚠️ **Statut actuel : MVP testable / prototype fintech.**  
 > Ce projet ne doit pas être utilisé pour gérer de l'argent réel sans intégration MonCash officielle, conformité, monitoring, backups et contrôles anti-fraude renforcés.
@@ -35,6 +35,7 @@ Beaucoup de petites caisses, groupes d'épargne, familles, clubs, agents et comm
 - simuler un dépôt MonCash ;
 - faire un transfert interne P2P ;
 - consulter l'historique transactionnel ;
+- superviser les utilisateurs et transactions via un dashboard admin ;
 - tester rapidement une logique de mini-wallet communautaire.
 
 ---
@@ -54,6 +55,7 @@ Beaucoup de petites caisses, groupes d'épargne, familles, clubs, agents et comm
 - Transfert P2P entre comptes.
 - Journal de transactions.
 - Profil transactionnel.
+- Dashboard admin minimal sur `#/admin`.
 
 ### Serveur SQLite MVP
 
@@ -70,6 +72,9 @@ Beaucoup de petites caisses, groupes d'épargne, familles, clubs, agents et comm
 - `POST /transactions/p2p`.
 - `GET /me/balance`.
 - `GET /me/transactions`.
+- `GET /admin/summary`.
+- `GET /admin/users`.
+- `GET /admin/transactions`.
 - Route legacy `POST /moncash` protégée par `x-api-key` pour simulation.
 - Idempotency key sur transactions.
 - Notifications email optionnelles.
@@ -101,9 +106,11 @@ ti-cochon-coffre/
 │  │  └─ landing.css
 │  └─ js/
 │     ├─ app.js
-│     └─ landing.js
+│     ├─ landing.js
+│     └─ admin-dashboard.js
 ├─ server/
 │  ├─ server.js
+│  ├─ admin.js
 │  ├─ auth.js
 │  ├─ db.js
 │  ├─ sqlite-ledger.js
@@ -177,9 +184,34 @@ localStorage.removeItem('tk_auth_token_v1')
 
 ---
 
+## 🛠️ Dashboard admin minimal
+
+Configurer `ADMIN_TOKEN` dans `server/.env` :
+
+```txt
+ADMIN_TOKEN=change-me-admin-token
+```
+
+Puis dans la console du navigateur :
+
+```js
+localStorage.setItem('tk_server_url', 'http://localhost:3000')
+localStorage.setItem('tk_admin_token', 'change-me-admin-token')
+```
+
+Ouvrir ensuite :
+
+```txt
+#/admin
+```
+
+Le dashboard affiche : utilisateurs, sessions actives, transactions, volume total, soldes et dernières opérations.
+
+---
+
 ## 📘 Documentation API
 
-Voir [`docs/API.md`](docs/API.md) pour les commandes `curl` de test : signup, login, dépôt, retrait, P2P, solde, historique et MonCash simulé.
+Voir [`docs/API.md`](docs/API.md) pour les commandes `curl` de test : signup, login, dépôt, retrait, P2P, solde, historique, admin et MonCash simulé.
 
 ---
 
@@ -188,9 +220,8 @@ Voir [`docs/API.md`](docs/API.md) pour les commandes `curl` de test : signup, lo
 Cette version est plus testable, mais reste un MVP :
 
 - SQLite local sans stratégie de backup automatisée ;
-- pas encore de dashboard admin ;
+- dashboard admin minimal sans rôles avancés ;
 - pas encore d'intégration MonCash officielle ;
-- pas encore de rôles utilisateurs ;
 - pas encore d'export CSV/PDF ;
 - pas encore de monitoring production.
 
@@ -204,7 +235,7 @@ Voir [`docs/SECURITY.md`](docs/SECURITY.md), mais les priorités sont :
 2. Intégration MonCash officielle.
 3. Webhooks signés.
 4. Rôles admin/agent/utilisateur.
-5. Dashboard admin.
+5. Dashboard admin avancé.
 6. Logs anti-fraude.
 7. Export CSV/PDF.
 8. Monitoring et alertes.
