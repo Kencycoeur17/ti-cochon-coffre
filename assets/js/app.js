@@ -1,57 +1,92 @@
-// === CONFIG (mettre l'URL de ton server si tu veux activer notifications) ===
-const SERVER_URL = ''; // ex: 'http://localhost:3000'
-const SERVER_API_KEY = ''; // correspond à process.env.API_KEY sur le serveur
-const SERVER_URL = 'http://localhost:3000';
-const SERVER_API_KEY = 'change-me-super-secret';
+// === CONFIG ===
+// Frontend demo mode is OFFLINE by default.
+// To connect a backend, set these values temporarily in the browser console:
+// localStorage.setItem('tk_server_url', 'http://localhost:3000')
+// localStorage.setItem('tk_server_api_key', 'your-dev-api-key')
+const SERVER_URL = localStorage.getItem('tk_server_url') || '';
+const SERVER_API_KEY = localStorage.getItem('tk_server_api_key') || '';
 
 // === END CONFIG ===
 
 /* assets/js/app.js
    Ti kochon coffre — client SPA logic
    Data: localStorage (users, events). Session: sessionStorage.
-   ✅ Refactor PRO:
-   - Ledger central (seule source de vérité pour soldes + événements)
-   - Modèle d'événement normalisé
-   - Migration automatique des tx legacy (v1) vers events (v2)
+
+   ✅ Braintechken PRO patch:
+   - Fixed duplicate const declarations that broke the app at parse time
+   - Fixed MonCash form submit flow
+   - Removed undefined `me` reference
+   - Added validation, safe rendering helpers and cleaner offline/online fallback
+   - Kept the prototype localStorage model for quick testing
 */
 document.addEventListener('DOMContentLoaded', () => {
   // --- short selectors
   const $ = (s) => document.querySelector(s);
   const toastEl = $('#toast');
+
   function toast(msg, ms = 2400) {
     toastEl.textContent = msg;
     toastEl.style.display = 'block';
-    setTimeout(() => (toastEl.style.display = 'none'), ms);
+    clearTimeout(toastEl._timer);
+    toastEl._timer = setTimeout(() => (toastEl.style.display = 'none'), ms);
   }
 
   // --- storage keys
   const K_USERS = 'tk_users_v1';
-  const K_EVENTS = 'tk_txs_v1'; // on conserve la clé pour compat rétro (migrée en place)
+  const K_EVENTS = 'tk_txs_v1'; // compat rétro
   const K_SESSION = 'tk_session_v1';
   const K_SCHEMA = 'tk_schema_v1';
 
   // --- utils
-  const fauxHash = (p) => btoa(p.split('').reverse().join(''));
+  const fauxHash = (p) => btoa(String(p || '').split('').reverse().join(''));
   const isoNow = () => new Date().toISOString();
-  const rnd = (n = 12) =>
-    Array.from(crypto?.getRandomValues?.(new Uint8Array(n)) || Array.from({ length: n }, () => Math.floor(Math.random() * 256)))
+  const money = (value) => Math.round(Number(value || 0) * 100) / 100;
+  const isPositiveAmount = (value) => Number.isFinite(Number(value)) && Number(value) > 0;
+  const cleanEmail = (email) => String(email || '').trim().toLowerCase();
+
+  const rnd = (n = 12) => {
+    const fallback = Array.from({ length: n }, () => Math.floor(Math.random() * 256));
+    const bytes = window.crypto?.getRandomValues ? crypto.getRandomValues(new Uint8Array(n)) : fallback;
+    return Array.from(bytes)
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('');
+  };
+
   const uid = (prefix = 'EV') => `${prefix}-${Date.now()}-${rnd(6)}`;
 
   function format(n) {
     return '$' + Number(n || 0).toFixed(2);
   }
 
-  // --- API client (proto+)
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+
+  function eventLabel(kind) {
+    const labels = {
+      SEED: 'Initialisation',
+      SIGNUP: 'Inscription',
+      LOGIN: 'Connexion',
+      DEPOSIT: 'Dépôt',
+      WITHDRAW: 'Retrait',
+      P2P: 'P2P',
+      MONCASH: 'MonCash'
+    };
+    return labels[kind] || kind || '—';
+  }
+
+  // --- API client (optional)
   function apiEnabled() {
     return Boolean(SERVER_URL && SERVER_API_KEY);
   }
 
   async function apiPost(path, body, { timeoutMs = 7000 } = {}) {
-    if (!apiEnabled()) {
-      throw new Error('API disabled');
-    }
+    if (!apiEnabled()) throw new Error('API disabled');
 
     const url = SERVER_URL.replace(/\/$/, '') + path;
     const ctrl = new AbortController();
@@ -71,8 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json().catch(() => null);
 
       if (!res.ok) {
-        const msg = data?.message || `HTTP ${res.status}`;
-        throw new Error(msg);
+        throw new Error(data?.message || `HTTP ${res.status}`);
       }
 
       return data;
@@ -81,8 +115,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-   
-  // --- store (isolé)
+  // --- store
   const store = {
     users: {
       get() {
@@ -93,18 +126,24 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       },
       set(list) {
-        localStorage.setItem(K_USERS, JSON.stringify(list));
+        localStorage.setItem(K_USERS, JSON.stringify(Array.isArray(list) ? list : []));
       },
       findByEmail(email) {
-        const e = (email || '').toLowerCase();
+        const e = cleanEmail(email);
         return this.get().find((u) => u.email === e) || null;
       },
       upsert(user) {
         const list = this.get();
-        const idx = list.findIndex((u) => u.email === user.email);
-        if (idx >= 0) list[idx] = user;
-        else list.push(user);
+        const safeUser = {
+          ...user,
+          email: cleanEmail(user.email),
+          balance: money(user.balance)
+        };
+        const idx = list.findIndex((u) => u.email === safeUser.email);
+        if (idx >= 0) list[idx] = safeUser;
+        else list.push(safeUser);
         this.set(list);
+        return safeUser;
       }
     },
     events: {
@@ -116,7 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       },
       set(list) {
-        localStorage.setItem(K_EVENTS, JSON.stringify(list));
+        localStorage.setItem(K_EVENTS, JSON.stringify(Array.isArray(list) ? list : []));
       }
     },
     schema: {
@@ -137,49 +176,27 @@ document.addEventListener('DOMContentLoaded', () => {
       return null;
     }
   }
+
   function setCurrent(u) {
+    if (!u) return;
     sessionStorage.setItem(K_SESSION, JSON.stringify(u));
     renderSide();
   }
+
   function clearCurrent() {
     sessionStorage.removeItem(K_SESSION);
     renderSide();
   }
 
-async function fetchServerBalance(email) {
-  if (!apiEnabled()) return null;
-  try {
-    const res = await fetch(
-      SERVER_URL.replace(/\/$/, '') + '/ledger/' + encodeURIComponent(email),
-      { headers: { 'x-api-key': SERVER_API_KEY } }
-    );
-    const data = await res.json();
-    return data?.balance ?? null;
-  } catch {
-    return null;
-  }
-}
-
-   
-  // --- Event model (v2)
-  // kind: 'SEED' | 'SIGNUP' | 'LOGIN' | 'DEPOSIT' | 'WITHDRAW' | 'P2P' | 'MONCASH'
-  // actor: email
-  // counterparty?: email
-  // amount?: number
-  // currency: 'USD'
-  // ref: string
-  // note?: string
-  // createdAt: ISO
-  // source: 'client' | 'server'
+  // --- Event model
   function normalizeEvent(ev) {
-    // if already in v2 shape, keep but ensure minimal fields
     if (ev && ev.kind && ev.actor && ev.createdAt) {
       return {
         id: ev.id || uid('EV'),
-        kind: ev.kind,
-        actor: String(ev.actor).toLowerCase(),
-        counterparty: ev.counterparty ? String(ev.counterparty).toLowerCase() : undefined,
-        amount: ev.amount === undefined ? undefined : Number(ev.amount),
+        kind: String(ev.kind).toUpperCase(),
+        actor: cleanEmail(ev.actor),
+        counterparty: ev.counterparty ? cleanEmail(ev.counterparty) : undefined,
+        amount: ev.amount === undefined ? undefined : money(ev.amount),
         currency: ev.currency || 'USD',
         ref: ev.ref || uid('REF'),
         note: ev.note || '',
@@ -188,10 +205,8 @@ async function fetchServerBalance(email) {
       };
     }
 
-    // legacy tx (v1)
+    // legacy tx v1
     const t = ev || {};
-    const legacyType = String(t.type || '').toLowerCase();
-
     const mapKind = {
       seed: 'SEED',
       signup: 'SIGNUP',
@@ -202,16 +217,12 @@ async function fetchServerBalance(email) {
       moncash: 'MONCASH'
     };
 
-    const kind = mapKind[legacyType] || 'DEPOSIT';
-    const actor = String(t.email || '').toLowerCase();
-    const counterparty = t.to ? String(t.to).toLowerCase() : undefined;
-
     return {
       id: String(t.id || uid('EV')),
-      kind,
-      actor,
-      counterparty,
-      amount: t.amount === undefined ? undefined : Number(t.amount),
+      kind: mapKind[String(t.type || '').toLowerCase()] || 'DEPOSIT',
+      actor: cleanEmail(t.email),
+      counterparty: t.to ? cleanEmail(t.to) : undefined,
+      amount: t.amount === undefined ? undefined : money(t.amount),
       currency: 'USD',
       ref: String(t.ref || uid('REF')),
       note: String(t.note || ''),
@@ -221,100 +232,82 @@ async function fetchServerBalance(email) {
   }
 
   function migrateLegacyTxsToEvents() {
-    // Idempotent: safe to run multiple times
     const raw = store.events.getRaw();
+
     if (!Array.isArray(raw)) {
       store.events.set([]);
       store.schema.set('2');
       return;
     }
 
-    // If schema already marked 2, still normalize defensively
-    const migrated = raw.map(normalizeEvent);
-
-    // Remove obvious duplicates by id (keep first occurrence)
     const seen = new Set();
-    const dedup = [];
-    for (const ev of migrated) {
-      if (!ev || !ev.id) continue;
-      if (seen.has(ev.id)) continue;
+    const migrated = raw.map(normalizeEvent).filter((ev) => {
+      if (!ev?.id || seen.has(ev.id)) return false;
       seen.add(ev.id);
-      dedup.push(ev);
-    }
+      return true;
+    });
 
-    store.events.set(dedup);
+    store.events.set(migrated);
     store.schema.set('2');
   }
- // --- Ledger central (seule porte qui modifie balances + écrit événements)
+
+  // --- Ledger central
   const ledger = {
     getEvents() {
       migrateLegacyTxsToEvents();
       return store.events.getRaw().map(normalizeEvent);
     },
-    addEvent(ev) {
-      const list = this.getEvents();
-      const normalized = normalizeEvent(ev);
 
-      // Persist event first (audit trail), then apply state
+    addEvent(ev) {
+      const normalized = normalizeEvent(ev);
+      const list = this.getEvents();
+
       list.push(normalized);
       store.events.set(list);
-
-      // Apply to balances when relevant
       this.applyToBalances(normalized);
-
-      // Refresh side UI
       renderSide();
+
       return normalized;
     },
+
     applyToBalances(ev) {
       const kind = ev.kind;
-      const amt = ev.amount === undefined ? 0 : Number(ev.amount);
+      const amt = Math.abs(Number(ev.amount || 0));
 
-      if (kind === 'LOGIN') return; // no balance change
-      if (kind === 'SIGNUP') return; // no balance change
+      if (kind === 'LOGIN' || kind === 'SIGNUP') return;
 
-      if (kind === 'SEED') {
-        // legacy seed used to set initial balance via event amount (optional)
-        if (!ev.actor) return;
+      if (kind === 'SEED' || kind === 'DEPOSIT' || kind === 'MONCASH') {
         this.changeBalance(ev.actor, amt);
         return;
       }
 
-      if (kind === 'DEPOSIT' || kind === 'MONCASH') {
-        this.changeBalance(ev.actor, Math.abs(amt));
-        return;
-      }
-
       if (kind === 'WITHDRAW') {
-        this.changeBalance(ev.actor, -Math.abs(amt));
+        this.changeBalance(ev.actor, -amt);
         return;
       }
 
-      if (kind === 'P2P') {
-        const to = ev.counterparty;
-        if (!to) return;
-        this.changeBalance(ev.actor, -Math.abs(amt));
-        this.changeBalance(to, Math.abs(amt));
-        return;
+      if (kind === 'P2P' && ev.counterparty) {
+        this.changeBalance(ev.actor, -amt);
+        this.changeBalance(ev.counterparty, amt);
       }
     },
+
     changeBalance(email, delta) {
       const users = store.users.get();
-      const u = users.find((x) => x.email === String(email).toLowerCase());
+      const u = users.find((x) => x.email === cleanEmail(email));
       if (!u) return;
 
-      u.balance = Math.round(((u.balance || 0) + Number(delta)) * 100) / 100;
+      u.balance = money((u.balance || 0) + Number(delta || 0));
       store.users.set(users);
 
-      // If current session matches, refresh session data
       const cu = currentUser();
-      if (cu && cu.email === u.email) setCurrent(u);
+      if (cu && cu.email === u.email) {
+        sessionStorage.setItem(K_SESSION, JSON.stringify(u));
+      }
     },
-    getUser(email) {
-      return store.users.findByEmail(email);
-    },
+
     historyFor(email) {
-      const e = String(email).toLowerCase();
+      const e = cleanEmail(email);
       return this.getEvents().filter((ev) => ev.actor === e || ev.counterparty === e);
     }
   };
@@ -324,9 +317,15 @@ async function fetchServerBalance(email) {
     migrateLegacyTxsToEvents();
 
     if (store.users.get().length === 0) {
-      const demo = { id: 1, name: 'Demo User', email: 'demo@fiaxy.test', pass: fauxHash('demo123'), balance: 25.0 };
-      store.users.set([demo]);
+      const demo = {
+        id: 1,
+        name: 'Demo User',
+        email: 'demo@fiaxy.test',
+        pass: fauxHash('demo123'),
+        balance: 0
+      };
 
+      store.users.set([demo]);
       ledger.addEvent({
         id: uid('EV'),
         kind: 'SEED',
@@ -339,12 +338,18 @@ async function fetchServerBalance(email) {
         source: 'client'
       });
     }
-
-    renderSide();
   })();
 
   // --- router
-  const routes = { '/': home, '/vault': vault, '/p2p': p2p, '/txs': txs, '/signup': signup, '/login': login };
+  const routes = {
+    '/': home,
+    '/vault': vault,
+    '/p2p': p2p,
+    '/txs': txs,
+    '/signup': signup,
+    '/login': login
+  };
+
   window.addEventListener('hashchange', router);
 
   document.querySelectorAll('[data-link]').forEach((b) =>
@@ -358,39 +363,58 @@ async function fetchServerBalance(email) {
     if (currentUser()) {
       clearCurrent();
       toast('Déconnecté');
-    } else location.hash = '#/login';
+      router();
+    } else {
+      location.hash = '#/login';
+    }
   });
 
   // --- modal open/close
   const monModal = $('#monModal');
+
   function openMonModal() {
     monModal.classList.remove('modal-hidden');
-    monModal.style.display = 'grid';
+    monModal.setAttribute('aria-hidden', 'false');
   }
+
   function closeMonModal() {
-    monModal.style.display = 'none';
     monModal.classList.add('modal-hidden');
+    monModal.setAttribute('aria-hidden', 'true');
   }
+
   $('#closeMon').addEventListener('click', closeMonModal);
-  $('#monForm').addEventListener('submit', (e) => {
+  monModal.addEventListener('click', (e) => {
+    if (e.target === monModal) closeMonModal();
+  });
+
+  $('#monForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const f = Object.fromEntries(new FormData(e.target));
-     async function simulateMoncash(to, amount, ref) {
+    await simulateMoncash(f.to, f.amount, f.ref);
+    closeMonModal();
+    e.target.reset();
+  });
+
+  // --- business actions
+  async function simulateMoncash(to, amount, ref) {
     const dest = store.users.findByEmail(to);
     if (!dest) {
       toast('Destinataire introuvable');
       return;
     }
 
-    const amt = Number(amount);
-    const reference = ref || 'MC-' + Date.now();
+    if (!isPositiveAmount(amount)) {
+      toast('Montant invalide');
+      return;
+    }
 
-    // 1) Try ONLINE first (server logs + emails)
+    const amt = money(amount);
+    const reference = String(ref || '').trim() || 'MC-' + Date.now();
+
     if (apiEnabled()) {
       try {
         await apiPost('/moncash', { to: dest.email, amount: amt, ref: reference });
 
-        // Apply locally as authoritative “credited”
         const ev = ledger.addEvent({
           kind: 'MONCASH',
           actor: dest.email,
@@ -403,25 +427,15 @@ async function fetchServerBalance(email) {
         });
 
         setCurrent(store.users.findByEmail(dest.email));
-        toast(`MonCash (serveur): +${format(ev.amount)}`);
+        toast(`MonCash serveur: +${format(ev.amount)}`);
         router();
         return;
       } catch (err) {
         console.warn('[moncash] server failed, fallback local:', err);
-        toast('Serveur indisponible — fallback local');
-        // fallback continues below
+        toast('Serveur indisponible — simulation locale');
       }
     }
-        fetchServerBalance(me.email).then((b) => {
-  if (typeof b === 'number') {
-    me.balance = b;
-    store.users.upsert(me);
-    setCurrent(me);
-  }
-});
 
-
-    // 2) OFFLINE fallback (local simulation)
     const ev = ledger.addEvent({
       kind: 'MONCASH',
       actor: dest.email,
@@ -438,33 +452,7 @@ async function fetchServerBalance(email) {
     router();
   }
 
-  });
-
-  // --- business actions
-  function simulateMoncash(to, amount, ref) {
-    const dest = store.users.findByEmail(to);
-    if (!dest) {
-      toast('Destinataire introuvable');
-      return;
-    }
-
-    const ev = ledger.addEvent({
-      kind: 'MONCASH',
-      actor: dest.email,
-      amount: Number(amount),
-      currency: 'USD',
-      ref: ref || uid('MC'),
-      note: 'MonCash simulated inbound',
-      createdAt: isoNow(),
-      source: 'client'
-    });
-  // Keep current session aligned to credited account (as before)
-    setCurrent(store.users.findByEmail(dest.email));
-    toast(`MonCash simulé: +${format(ev.amount)}`);
-    router();
-  }
-
-  // --- render functions (views)
+  // --- render functions
   function router() {
     const path = location.hash.replace('#', '') || '/';
     const fn = routes[path] || notfound;
@@ -473,44 +461,48 @@ async function fetchServerBalance(email) {
   }
 
   function home() {
+    const userCount = store.users.get().length;
+    const txCount = ledger.getEvents().length;
+
     $('#view').innerHTML = `
-      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
-        <div style="flex:1;min-width:260px" class="card">
+      <div class="hero-grid">
+        <div class="card hero-card">
           <div class="vault-hero">
             <div class="pig-icon">🐷</div>
             <div>
               <div class="kv">Ti kochon coffre</div>
-              <div class="muted">Gestion simple de flux financiers - prototype</div>
-              <div style="height:10px"></div>
-              <div class="chip">Logo: <i class="ri-piggy-bank-line"></i> <span style="margin-left:6px">TiKochon</span></div>
+              <h2>Coffre digital simple pour gérer dépôts, retraits et P2P.</h2>
+              <p class="muted">Prototype local avec simulation MonCash, journal de transactions et solde client.</p>
+              <div class="hero-actions">
+                <button class="btn" onclick="location.hash='#/signup'">Créer un compte</button>
+                <button class="ghost" onclick="location.hash='#/login'">Se connecter</button>
+                <button class="ghost" onclick="openMonModal()">Simuler MonCash</button>
+              </div>
             </div>
           </div>
-          <div style="height:12px"></div>
-          <div class="muted-xs">Fonctionnalités</div>
-          <ul class="small">
-            <li>Inscription / Connexion client-side</li>
-            <li>Simulation MonCash (paiement entrant)</li>
-            <li>Transfert P2P entre comptes</li>
-            <li>Historique & profil de transaction</li>
-          </ul>
         </div>
 
-        <div style="flex:1;min-width:320px" class="card">
-          <h2>Accès rapide</h2>
-          <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
-            <button class="btn" onclick="location.hash='#/signup'">Créer un compte</button>
-            <button class="ghost" onclick="location.hash='#/login'">Se connecter</button>
-            <button class="ghost" onclick="openMonModal()">Simuler MonCash</button>
+        <div class="card">
+          <h2>Vue rapide</h2>
+          <div class="stats">
+            <div class="stat"><strong>${userCount}</strong><span>Compte(s)</span></div>
+            <div class="stat"><strong>${txCount}</strong><span>Événement(s)</span></div>
+            <div class="stat"><strong>${apiEnabled() ? 'ON' : 'OFF'}</strong><span>API backend</span></div>
           </div>
-          <div style="height:10px"></div>
-          <div class="muted-xs">Test rapide</div>
-          <ol class="small">
-            <li>Créer un compte (ou utiliser <code>demo@fiaxy.test</code>)</li>
-            <li>Se connecter</li>
-            <li>Déposer via MonCash simulé, puis transférer P2P</li>
-            <li>Vérifier l'historique dans Profil Tx</li>
-          </ol>
+          <div class="notice">
+            Mode prototype : données stockées localement dans ton navigateur. Ne pas utiliser comme système financier réel sans backend sécurisé.
+          </div>
         </div>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="muted-xs">Test rapide</div>
+        <ol class="small">
+          <li>Utilise <code>demo@fiaxy.test</code> / <code>demo123</code> ou crée un compte.</li>
+          <li>Simule un dépôt MonCash entrant.</li>
+          <li>Transfère vers un autre compte existant.</li>
+          <li>Vérifie l'historique dans Profil Tx.</li>
+        </ol>
       </div>
     `;
   }
@@ -519,10 +511,10 @@ async function fetchServerBalance(email) {
     $('#view').innerHTML = `
       <h2>Créer un compte</h2>
       <form id="signupForm" class="small">
-        <label>Nom complet<input name="name" required></label>
+        <label>Nom complet<input name="name" required minlength="2"></label>
         <label>Email<input name="email" required type="email"></label>
-        <label>Mot de passe<input name="password" required type="password" placeholder="min 6 char"></label>
-        <div style="display:flex;gap:8px;margin-top:8px">
+        <label>Mot de passe<input name="password" required type="password" minlength="6" placeholder="min 6 caractères"></label>
+        <div class="form-actions">
           <button class="btn" type="submit">S'inscrire</button>
           <button class="ghost" type="button" onclick="location.hash='#/login'">J'ai déjà un compte</button>
         </div>
@@ -531,16 +523,22 @@ async function fetchServerBalance(email) {
 
     $('#signupForm').addEventListener('submit', (e) => {
       e.preventDefault();
+
       const f = Object.fromEntries(new FormData(e.target));
-      const email = String(f.email || '').toLowerCase();
-      const users = store.users.get();
-      if (users.some((u) => u.email === email)) {
+      const email = cleanEmail(f.email);
+
+      if (store.users.findByEmail(email)) {
         toast('Email déjà utilisé');
         return;
       }
 
-      const user = { id: Date.now(), name: f.name, email, pass: fauxHash(f.password), balance: 0 };
-            store.users.upsert(user);
+      const user = store.users.upsert({
+        id: Date.now(),
+        name: String(f.name || '').trim(),
+        email,
+        pass: fauxHash(f.password),
+        balance: 0
+      });
 
       ledger.addEvent({
         kind: 'SIGNUP',
@@ -552,17 +550,15 @@ async function fetchServerBalance(email) {
         source: 'client'
       });
 
-      // notify server (best effort) — does not block UX
       if (apiEnabled()) {
-        apiPost('/notify/signup', { name: user.name, email: user.email })
-          .then(() => console.info('[signup] notified server'))
-          .catch((err) => console.warn('[signup] notify failed:', err));
+        apiPost('/notify/signup', { name: user.name, email: user.email }).catch((err) =>
+          console.warn('[signup] notify failed:', err)
+        );
       }
 
       setCurrent(user);
       toast('Compte créé');
       location.hash = '#/vault';
-
     });
   }
 
@@ -572,7 +568,7 @@ async function fetchServerBalance(email) {
       <form id="loginForm" class="small">
         <label>Email<input name="email" required type="email"></label>
         <label>Mot de passe<input name="password" required type="password"></label>
-        <div style="display:flex;gap:8px;margin-top:8px">
+        <div class="form-actions">
           <button class="btn" type="submit">Se connecter</button>
           <button class="ghost" type="button" onclick="location.hash='#/signup'">Créer compte</button>
         </div>
@@ -581,16 +577,17 @@ async function fetchServerBalance(email) {
 
     $('#loginForm').addEventListener('submit', (e) => {
       e.preventDefault();
+
       const f = Object.fromEntries(new FormData(e.target));
-      const email = String(f.email || '').toLowerCase();
+      const email = cleanEmail(f.email);
       const found = store.users.get().find((u) => u.email === email && u.pass === fauxHash(f.password));
+
       if (!found) {
         toast('Identifiants incorrects');
         return;
       }
 
       setCurrent(found);
-
       ledger.addEvent({
         kind: 'LOGIN',
         actor: found.email,
@@ -608,6 +605,7 @@ async function fetchServerBalance(email) {
 
   function vault() {
     const user = currentUser();
+
     if (!user) {
       $('#view').innerHTML = `
         <h2>Accès au coffre</h2>
@@ -618,48 +616,45 @@ async function fetchServerBalance(email) {
     }
 
     const me = store.users.findByEmail(user.email) || user;
-    setCurrent(me);
+    sessionStorage.setItem(K_SESSION, JSON.stringify(me));
 
     $('#view').innerHTML = `
-      <div style="display:flex;gap:12px;flex-wrap:wrap">
-        <div style="flex:1;min-width:300px">
-          <div class="card">
-            <div style="display:flex;gap:12px;align-items:center">
-              <div class="pig-icon">🐷</div>
-              <div>
-                <div class="kv">Bonjour, <strong>${me.name}</strong></div>
-                <div class="muted">Email: ${me.email}</div>
-                <div style="height:8px"></div>
-                <div class="balance">${format(me.balance)}</div>
-                <div class="muted-xs">Solde disponible</div>
-              </div>
+      <div class="vault-layout">
+        <div class="card">
+          <div class="vault-hero">
+            <div class="pig-icon">🐷</div>
+            <div>
+              <div class="kv">Bonjour, <strong>${escapeHtml(me.name)}</strong></div>
+              <div class="muted">Email: ${escapeHtml(me.email)}</div>
+              <div style="height:8px"></div>
+              <div class="balance">${format(me.balance)}</div>
+              <div class="muted-xs">Solde disponible</div>
             </div>
-            <div style="height:12px"></div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap">
-              <button class="btn" id="openMonBtn">Simuler MonCash</button>
-              <button class="ghost" id="depositBtn">Dépôt manuel</button>
-              <button class="ghost" id="withdrawBtn">Retrait manuel</button>
-              <button class="ghost" id="logoutBtn">Se déconnecter</button>
-            </div>
+          </div>
+          <div class="hero-actions">
+            <button class="btn" id="openMonBtn">Simuler MonCash</button>
+            <button class="ghost" id="logoutBtn">Se déconnecter</button>
           </div>
         </div>
 
-        <div style="flex:1;min-width:260px">
-          <div class="card">
-            <h3>Journal & actions</h3>
-            <div style="height:8px"></div>
-            <form id="manualForm" class="small">
-              <label>Type<select name="type"><option value="deposit">Dépôt</option><option value="withdraw">Retrait</option></select></label>
-              <label>Montant<input name="amount" type="number" required step="0.01" min="0.01" value="5"></label>
-              <div style="display:flex;gap:8px;margin-top:8px">
-                <button class="btn" type="submit">Envoyer</button>
-                <button type="button" class="ghost" id="clearTxs">Effacer historique (dev)</button>
-              </div>
-            </form>
-            <div style="height:8px"></div>
-            <div class="muted-xs">Dernières 6 tx</div>
-            <div id="lastTxs" class="log"></div>
-          </div>
+        <div class="card">
+          <h3>Journal & actions</h3>
+          <form id="manualForm" class="small">
+            <label>Type
+              <select name="type">
+                <option value="deposit">Dépôt</option>
+                <option value="withdraw">Retrait</option>
+              </select>
+            </label>
+            <label>Montant<input name="amount" type="number" required step="0.01" min="0.01" value="5"></label>
+            <div class="form-actions">
+              <button class="btn" type="submit">Envoyer</button>
+              <button type="button" class="ghost danger-soft" id="clearTxs">Effacer historique (dev)</button>
+            </div>
+          </form>
+          <div style="height:8px"></div>
+          <div class="muted-xs">Dernières 6 tx</div>
+          <div id="lastTxs" class="log"></div>
         </div>
       </div>
     `;
@@ -673,44 +668,38 @@ async function fetchServerBalance(email) {
 
     $('#manualForm').addEventListener('submit', (e) => {
       e.preventDefault();
-      const f = Object.fromEntries(new FormData(e.target));
-      const amt = Number(f.amount);
 
+      const f = Object.fromEntries(new FormData(e.target));
+      const amt = money(f.amount);
       const latestMe = store.users.findByEmail(me.email) || me;
+
+      if (!isPositiveAmount(amt)) {
+        toast('Montant invalide');
+        return;
+      }
+
       if (f.type === 'withdraw' && amt > (latestMe.balance || 0)) {
         toast('Solde insuffisant');
         return;
       }
 
-      if (f.type === 'deposit') {
-        ledger.addEvent({
-          kind: 'DEPOSIT',
-          actor: latestMe.email,
-          amount: amt,
-          currency: 'USD',
-          ref: 'DEP-' + Date.now(),
-          note: 'manual',
-          createdAt: isoNow(),
-          source: 'client'
-        });
-      } else {
-        ledger.addEvent({
-          kind: 'WITHDRAW',
-          actor: latestMe.email,
-          amount: amt,
-          currency: 'USD',
-          ref: 'WIT-' + Date.now(),
-          note: 'manual',
-          createdAt: isoNow(),
-          source: 'client'
-        });
-      }
+      ledger.addEvent({
+        kind: f.type === 'deposit' ? 'DEPOSIT' : 'WITHDRAW',
+        actor: latestMe.email,
+        amount: amt,
+        currency: 'USD',
+        ref: (f.type === 'deposit' ? 'DEP-' : 'WIT-') + Date.now(),
+        note: 'manual',
+        createdAt: isoNow(),
+        source: 'client'
+      });
 
       toast('Transaction ok');
       router();
     });
 
     $('#clearTxs').addEventListener('click', () => {
+      if (!confirm("Effacer l'historique local de transactions ?")) return;
       localStorage.removeItem(K_EVENTS);
       store.schema.set('1');
       migrateLegacyTxsToEvents();
@@ -724,6 +713,7 @@ async function fetchServerBalance(email) {
 
   function p2p() {
     const user = currentUser();
+
     if (!user) {
       $('#view').innerHTML = `<h2>Transfert P2P</h2><p class="muted">Connecte-toi pour transférer vers un autre compte.</p>`;
       return;
@@ -734,24 +724,42 @@ async function fetchServerBalance(email) {
       <form id="p2pForm" class="small card">
         <label>Destinataire (email)<input name="to" required type="email" placeholder="ex: ami@ex.com"></label>
         <label>Montant (USD)<input name="amount" required type="number" step="0.01" min="0.01" value="1"></label>
-        <label>Note (optionnel)<input name="note" placeholder="Pour quoi ?"></label>
-        <div style="display:flex;gap:8px;margin-top:8px"><button class="btn" type="submit">Transférer</button></div>
+        <label>Note (optionnel)<input name="note" maxlength="80" placeholder="Pour quoi ?"></label>
+        <div class="form-actions"><button class="btn" type="submit">Transférer</button></div>
       </form>
     `;
 
     $('#p2pForm').addEventListener('submit', (e) => {
       e.preventDefault();
-      const f = Object.fromEntries(new FormData(e.target));
 
+      const f = Object.fromEntries(new FormData(e.target));
       const me = store.users.findByEmail(currentUser().email);
       const to = store.users.findByEmail(f.to);
+      const amt = money(f.amount);
+
+      if (!me) {
+        toast('Session invalide');
+        clearCurrent();
+        router();
+        return;
+      }
+
       if (!to) {
         toast('Destinataire non trouvé');
         return;
       }
 
-      const amt = Number(f.amount);
-      if (amt > (me?.balance || 0)) {
+      if (to.email === me.email) {
+        toast('Transfert vers soi-même impossible');
+        return;
+      }
+
+      if (!isPositiveAmount(amt)) {
+        toast('Montant invalide');
+        return;
+      }
+
+      if (amt > (me.balance || 0)) {
         toast('Solde insuffisant');
         return;
       }
@@ -763,19 +771,19 @@ async function fetchServerBalance(email) {
         amount: amt,
         currency: 'USD',
         ref: 'P2P-' + Date.now(),
-        note: f.note || 'p2p',
+        note: String(f.note || 'p2p').trim(),
         createdAt: isoNow(),
         source: 'client'
       });
 
       toast('Transfert effectué');
-      renderSide();
       router();
     });
   }
 
   function txs() {
     const user = currentUser();
+
     if (!user) {
       $('#view').innerHTML = `<h2>Profil transaction</h2><p class="muted">Connecte-toi pour voir ton historique.</p>`;
       return;
@@ -785,35 +793,32 @@ async function fetchServerBalance(email) {
       .historyFor(user.email)
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
-    const prettyKind = (k) => {
-      const m = {
-        SEED: 'seed',
-        SIGNUP: 'signup',
-        LOGIN: 'login',
-        DEPOSIT: 'deposit',
-        WITHDRAW: 'withdraw',
-        P2P: 'p2p',
-        MONCASH: 'moncash'
-      };
-      return m[k] || k;
-    };
-
     $('#view').innerHTML = `
-      <h2>Profil de transaction — ${user.name}</h2>
+      <h2>Profil de transaction — ${escapeHtml(user.name)}</h2>
       <div style="height:12px"></div>
-      <div class="card">
+      <div class="card table-wrap">
         <table>
-          <thead><tr><th>Type</th><th>Montant</th><th>Contrepartie</th><th>Référence</th><th>Heure</th></tr></thead>
+          <thead>
+            <tr><th>Type</th><th>Montant</th><th>Contrepartie</th><th>Référence</th><th>Heure</th></tr>
+          </thead>
           <tbody>
-            ${list.slice(0, 40).map((t) => `
-              <tr>
-                <td>${prettyKind(t.kind)}</td>
-                <td>${t.amount !== undefined ? format(t.amount) : '-'}</td>
-                <td>${t.counterparty ? t.counterparty : '—'}</td>
-                <td>${t.ref || ''}</td>
-                <td>${new Date(t.createdAt).toLocaleString()}</td>
-              </tr>
-            `).join('')}
+            ${
+              list.length
+                ? list
+                    .slice(0, 40)
+                    .map(
+                      (t) => `
+                        <tr>
+                          <td>${eventLabel(t.kind)}</td>
+                          <td>${t.amount !== undefined ? format(t.amount) : '-'}</td>
+                          <td>${t.counterparty ? escapeHtml(t.counterparty) : '—'}</td>
+                          <td>${escapeHtml(t.ref || '')}</td>
+                          <td>${new Date(t.createdAt).toLocaleString()}</td>
+                        </tr>`
+                    )
+                    .join('')
+                : '<tr><td colspan="5" class="muted">Aucune transaction.</td></tr>'
+            }
           </tbody>
         </table>
       </div>
@@ -825,29 +830,27 @@ async function fetchServerBalance(email) {
   }
 
   // --- UI helpers
-  function renderLastEvents(email) {
-    const last = ledger
-      .historyFor(email)
-      .slice(-6)
-      .reverse();
-
-    const prettyKind = (k) => {
-      const m = { SEED: 'SEED', SIGNUP: 'SIGNUP', LOGIN: 'LOGIN', DEPOSIT: 'DEPOSIT', WITHDRAW: 'WITHDRAW', P2P: 'P2P', MONCASH: 'MONCASH' };
-      return m[k] || k;
-    };
-
-    $('#lastTxs').innerHTML =
-      last.length === 0
+  function renderEvents(target, list) {
+    target.innerHTML =
+      list.length === 0
         ? 'Aucune transaction.'
-        : last
+        : list
             .map(
               (t) => `
-            <div style="padding:6px;border-bottom:1px dashed rgba(255,255,255,0.03)">
-              <div class="small"><strong>${prettyKind(t.kind)}</strong> ${t.amount !== undefined ? format(t.amount) : ''}</div>
-              <div class="muted-xs">${t.actor} ${t.counterparty ? '→ ' + t.counterparty : ''} • ${new Date(t.createdAt).toLocaleString()}</div>
-            </div>`
+              <div class="tx-item">
+                <div class="small"><strong>${eventLabel(t.kind)}</strong> ${t.amount !== undefined ? format(t.amount) : ''}</div>
+                <div class="muted-xs">${escapeHtml(t.actor)} ${t.counterparty ? '→ ' + escapeHtml(t.counterparty) : ''} • ${new Date(t.createdAt).toLocaleString()}</div>
+              </div>`
             )
             .join('');
+  }
+
+  function renderLastEvents(email) {
+    const target = $('#lastTxs');
+    if (!target) return;
+
+    const last = ledger.historyFor(email).slice(-6).reverse();
+    renderEvents(target, last);
   }
 
   function renderSide() {
@@ -856,17 +859,20 @@ async function fetchServerBalance(email) {
     const side = $('#sideActions');
     const mini = $('#miniTx');
 
+    if (!si || !side || !mini) return;
+
     if (user) {
       const fresh = store.users.findByEmail(user.email) || user;
+
       si.innerHTML = `
-        <div><strong>${fresh.name}</strong></div>
-        <div class="muted-xs">${fresh.email}</div>
+        <div><strong>${escapeHtml(fresh.name)}</strong></div>
+        <div class="muted-xs">${escapeHtml(fresh.email)}</div>
         <div style="height:8px"></div>
         <div class="balance">${format(fresh.balance)}</div>
       `;
 
       side.innerHTML = `
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div class="side-actions">
           <button class="ghost" onclick="location.hash='#/vault'">Mon coffre</button>
           <button class="ghost" onclick="location.hash='#/txs'">Profil Tx</button>
           <button class="ghost" id="sideLogout">Se déconnecter</button>
@@ -881,7 +887,7 @@ async function fetchServerBalance(email) {
     } else {
       si.textContent = 'Aucun utilisateur connecté.';
       side.innerHTML = `
-        <div style="display:flex;gap:8px">
+        <div class="side-actions">
           <button class="btn" onclick="location.hash='#/signup'">Créer compte</button>
           <button class="ghost" onclick="location.hash='#/login'">Se connecter</button>
         </div>
@@ -889,18 +895,7 @@ async function fetchServerBalance(email) {
     }
 
     const txs = ledger.getEvents().slice(-6).reverse();
-    mini.innerHTML =
-      txs.length === 0
-        ? 'Aucune transaction.'
-        : txs
-            .map(
-              (t) => `
-            <div style="padding:6px;border-bottom:1px dashed rgba(255,255,255,0.03)">
-              <div class="small"><strong>${t.kind}</strong> ${t.amount !== undefined ? format(t.amount) : ''}</div>
-              <div class="muted-xs">${t.actor} ${t.counterparty ? '→ ' + t.counterparty : ''} • ${new Date(t.createdAt).toLocaleString()}</div>
-            </div>`
-            )
-            .join('');
+    renderEvents(mini, txs);
   }
 
   // --- boot
@@ -908,9 +903,10 @@ async function fetchServerBalance(email) {
     renderSide();
     router();
   }
+
   boot();
 
-  // expose for console debugging (handy)
+  // expose for inline buttons + console debugging
   window.openMonModal = openMonModal;
   window.simulateMoncash = simulateMoncash;
   window.ledger = ledger;
