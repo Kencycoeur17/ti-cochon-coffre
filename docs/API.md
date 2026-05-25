@@ -131,7 +131,53 @@ curl http://localhost:3000/me/transactions \
 
 ---
 
-## 10. Route MonCash prototype par API key
+## 10. Admin summary
+
+Configurer `ADMIN_TOKEN` dans `server/.env`, puis :
+
+```bash
+curl http://localhost:3000/admin/summary \
+  -H "x-admin-token: change-me-admin-token"
+```
+
+---
+
+## 11. Admin users
+
+```bash
+curl http://localhost:3000/admin/users \
+  -H "x-admin-token: change-me-admin-token"
+```
+
+---
+
+## 12. Admin transactions
+
+```bash
+curl http://localhost:3000/admin/transactions \
+  -H "x-admin-token: change-me-admin-token"
+```
+
+---
+
+## 13. Dashboard admin frontend
+
+Dans la console du navigateur :
+
+```js
+localStorage.setItem('tk_server_url', 'http://localhost:3000')
+localStorage.setItem('tk_admin_token', 'change-me-admin-token')
+```
+
+Puis ouvrir :
+
+```txt
+#/admin
+```
+
+---
+
+## 14. Route MonCash prototype par API key
 
 Cette route est conservée pour simulation legacy. Elle ne remplace pas un vrai webhook MonCash.
 
@@ -145,7 +191,7 @@ curl -X POST http://localhost:3000/moncash \
 
 ---
 
-## 11. Connecter le frontend au serveur
+## 15. Connecter le frontend au serveur
 
 Dans la console du navigateur :
 
@@ -162,4 +208,5 @@ Pour revenir au mode offline :
 localStorage.removeItem('tk_server_url')
 localStorage.removeItem('tk_server_api_key')
 localStorage.removeItem('tk_auth_token_v1')
+localStorage.removeItem('tk_admin_token')
 ```
