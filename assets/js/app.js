@@ -1,43 +1,33 @@
 // === CONFIG ===
-// Frontend demo mode is OFFLINE by default.
-// To connect a backend, set these values temporarily in the browser console:
+// Offline mode is the default. To enable the SQLite backend MVP:
 // localStorage.setItem('tk_server_url', 'http://localhost:3000')
-// localStorage.setItem('tk_server_api_key', 'your-dev-api-key')
+// Optional legacy MonCash/API-key routes:
+// localStorage.setItem('tk_server_api_key', 'change-me-long-random-dev-key')
 const SERVER_URL = localStorage.getItem('tk_server_url') || '';
 const SERVER_API_KEY = localStorage.getItem('tk_server_api_key') || '';
 
-// === END CONFIG ===
-
 /* assets/js/app.js
-   Ti kochon coffre — client SPA logic
-   Data: localStorage (users, events). Session: sessionStorage.
-
-   ✅ Braintechken PRO patch:
-   - Fixed duplicate const declarations that broke the app at parse time
-   - Fixed MonCash form submit flow
-   - Removed undefined `me` reference
-   - Added validation, safe rendering helpers and cleaner offline/online fallback
-   - Kept the prototype localStorage model for quick testing
+   Ti Cochon Coffre — SPA logic
+   - Offline localStorage demo mode
+   - Optional SQLite server mode with auth + bearer token
 */
 document.addEventListener('DOMContentLoaded', () => {
-  // --- short selectors
   const $ = (s) => document.querySelector(s);
   const toastEl = $('#toast');
 
-  function toast(msg, ms = 2400) {
+  function toast(msg, ms = 2600) {
     toastEl.textContent = msg;
     toastEl.style.display = 'block';
     clearTimeout(toastEl._timer);
     toastEl._timer = setTimeout(() => (toastEl.style.display = 'none'), ms);
   }
 
-  // --- storage keys
   const K_USERS = 'tk_users_v1';
-  const K_EVENTS = 'tk_txs_v1'; // compat rétro
+  const K_EVENTS = 'tk_txs_v1';
   const K_SESSION = 'tk_session_v1';
   const K_SCHEMA = 'tk_schema_v1';
+  const K_AUTH_TOKEN = 'tk_auth_token_v1';
 
-  // --- utils
   const fauxHash = (p) => btoa(String(p || '').split('').reverse().join(''));
   const isoNow = () => new Date().toISOString();
   const money = (value) => Math.round(Number(value || 0) * 100) / 100;
@@ -80,42 +70,53 @@ document.addEventListener('DOMContentLoaded', () => {
     return labels[kind] || kind || '—';
   }
 
-  // --- API client (optional)
-  function apiEnabled() {
+  function serverMode() {
+    return Boolean(SERVER_URL);
+  }
+
+  function apiKeyMode() {
     return Boolean(SERVER_URL && SERVER_API_KEY);
   }
 
-  async function apiPost(path, body, { timeoutMs = 7000 } = {}) {
-    if (!apiEnabled()) throw new Error('API disabled');
+  function authToken() {
+    return localStorage.getItem(K_AUTH_TOKEN) || '';
+  }
+
+  function setAuthToken(token) {
+    if (token) localStorage.setItem(K_AUTH_TOKEN, token);
+  }
+
+  function clearAuthToken() {
+    localStorage.removeItem(K_AUTH_TOKEN);
+  }
+
+  async function apiRequest(path, { method = 'GET', body, auth = false, apiKey = false, timeoutMs = 9000 } = {}) {
+    if (!SERVER_URL) throw new Error('API disabled');
 
     const url = SERVER_URL.replace(/\/$/, '') + path;
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
 
     try {
+      const headers = { 'content-type': 'application/json' };
+      if (auth) headers.authorization = `Bearer ${authToken()}`;
+      if (apiKey && SERVER_API_KEY) headers['x-api-key'] = SERVER_API_KEY;
+
       const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': SERVER_API_KEY
-        },
-        body: JSON.stringify(body || {}),
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
         signal: ctrl.signal
       });
 
       const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        throw new Error(data?.message || `HTTP ${res.status}`);
-      }
-
+      if (!res.ok) throw new Error(data?.message || `HTTP ${res.status}`);
       return data;
     } finally {
       clearTimeout(t);
     }
   }
 
-  // --- store
   const store = {
     users: {
       get() {
@@ -168,7 +169,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  // --- session
   function currentUser() {
     try {
       return JSON.parse(sessionStorage.getItem(K_SESSION) || 'null');
@@ -185,10 +185,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function clearCurrent() {
     sessionStorage.removeItem(K_SESSION);
+    clearAuthToken();
     renderSide();
   }
 
-  // --- Event model
   function normalizeEvent(ev) {
     if (ev && ev.kind && ev.actor && ev.createdAt) {
       return {
@@ -200,12 +200,12 @@ document.addEventListener('DOMContentLoaded', () => {
         currency: ev.currency || 'USD',
         ref: ev.ref || uid('REF'),
         note: ev.note || '',
+        status: ev.status || 'confirmed',
         createdAt: ev.createdAt,
         source: ev.source || 'client'
       };
     }
 
-    // legacy tx v1
     const t = ev || {};
     const mapKind = {
       seed: 'SEED',
@@ -226,6 +226,7 @@ document.addEventListener('DOMContentLoaded', () => {
       currency: 'USD',
       ref: String(t.ref || uid('REF')),
       note: String(t.note || ''),
+      status: 'confirmed',
       createdAt: t.ts || isoNow(),
       source: 'client'
     };
@@ -233,7 +234,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function migrateLegacyTxsToEvents() {
     const raw = store.events.getRaw();
-
     if (!Array.isArray(raw)) {
       store.events.set([]);
       store.schema.set('2');
@@ -251,7 +251,6 @@ document.addEventListener('DOMContentLoaded', () => {
     store.schema.set('2');
   }
 
-  // --- Ledger central
   const ledger = {
     getEvents() {
       migrateLegacyTxsToEvents();
@@ -261,31 +260,21 @@ document.addEventListener('DOMContentLoaded', () => {
     addEvent(ev) {
       const normalized = normalizeEvent(ev);
       const list = this.getEvents();
-
       list.push(normalized);
       store.events.set(list);
       this.applyToBalances(normalized);
       renderSide();
-
       return normalized;
     },
 
     applyToBalances(ev) {
+      if (ev.status && ev.status !== 'confirmed') return;
       const kind = ev.kind;
       const amt = Math.abs(Number(ev.amount || 0));
 
       if (kind === 'LOGIN' || kind === 'SIGNUP') return;
-
-      if (kind === 'SEED' || kind === 'DEPOSIT' || kind === 'MONCASH') {
-        this.changeBalance(ev.actor, amt);
-        return;
-      }
-
-      if (kind === 'WITHDRAW') {
-        this.changeBalance(ev.actor, -amt);
-        return;
-      }
-
+      if (kind === 'SEED' || kind === 'DEPOSIT' || kind === 'MONCASH') return this.changeBalance(ev.actor, amt);
+      if (kind === 'WITHDRAW') return this.changeBalance(ev.actor, -amt);
       if (kind === 'P2P' && ev.counterparty) {
         this.changeBalance(ev.actor, -amt);
         this.changeBalance(ev.counterparty, amt);
@@ -296,14 +285,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const users = store.users.get();
       const u = users.find((x) => x.email === cleanEmail(email));
       if (!u) return;
-
       u.balance = money((u.balance || 0) + Number(delta || 0));
       store.users.set(users);
 
       const cu = currentUser();
-      if (cu && cu.email === u.email) {
-        sessionStorage.setItem(K_SESSION, JSON.stringify(u));
-      }
+      if (cu && cu.email === u.email) sessionStorage.setItem(K_SESSION, JSON.stringify(u));
     },
 
     historyFor(email) {
@@ -312,19 +298,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   };
 
-  // --- init demo data
   (function initData() {
     migrateLegacyTxsToEvents();
+    if (serverMode()) return;
 
     if (store.users.get().length === 0) {
-      const demo = {
-        id: 1,
-        name: 'Demo User',
-        email: 'demo@fiaxy.test',
-        pass: fauxHash('demo123'),
-        balance: 0
-      };
-
+      const demo = { id: 1, name: 'Demo User', email: 'demo@fiaxy.test', pass: fauxHash('demo123'), balance: 0 };
       store.users.set([demo]);
       ledger.addEvent({
         id: uid('EV'),
@@ -340,16 +319,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   })();
 
-  // --- router
-  const routes = {
-    '/': home,
-    '/vault': vault,
-    '/p2p': p2p,
-    '/txs': txs,
-    '/signup': signup,
-    '/login': login
-  };
-
+  const routes = { '/': home, '/vault': vault, '/p2p': p2p, '/txs': txs, '/signup': signup, '/login': login };
   window.addEventListener('hashchange', router);
 
   document.querySelectorAll('[data-link]').forEach((b) =>
@@ -359,8 +329,11 @@ document.addEventListener('DOMContentLoaded', () => {
     })
   );
 
-  $('#ctaAuth').addEventListener('click', () => {
+  $('#ctaAuth').addEventListener('click', async () => {
     if (currentUser()) {
+      if (serverMode() && authToken()) {
+        apiRequest('/auth/logout', { method: 'POST', auth: true }).catch(() => null);
+      }
       clearCurrent();
       toast('Déconnecté');
       router();
@@ -369,7 +342,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // --- modal open/close
   const monModal = $('#monModal');
 
   function openMonModal() {
@@ -395,39 +367,40 @@ document.addEventListener('DOMContentLoaded', () => {
     e.target.reset();
   });
 
-  // --- business actions
+  async function syncServerSession() {
+    if (!serverMode() || !authToken()) return null;
+    try {
+      const data = await apiRequest('/auth/me', { auth: true });
+      const user = { ...data.user, balance: data.balance || 0, serverMode: true };
+      setCurrent(user);
+      return user;
+    } catch (err) {
+      console.warn('[session] sync failed:', err);
+      clearCurrent();
+      return null;
+    }
+  }
+
+  async function serverTransaction(path, payload) {
+    const idempotencyKey = `web-${Date.now()}-${rnd(4)}`;
+    return apiRequest(path, {
+      method: 'POST',
+      body: { ...payload, idempotencyKey },
+      auth: true
+    });
+  }
+
   async function simulateMoncash(to, amount, ref) {
-    const dest = store.users.findByEmail(to);
-    if (!dest) {
-      toast('Destinataire introuvable');
-      return;
-    }
+    if (!isPositiveAmount(amount)) return toast('Montant invalide');
 
-    if (!isPositiveAmount(amount)) {
-      toast('Montant invalide');
-      return;
-    }
-
-    const amt = money(amount);
     const reference = String(ref || '').trim() || 'MC-' + Date.now();
+    const amt = money(amount);
 
-    if (apiEnabled()) {
+    if (apiKeyMode()) {
       try {
-        await apiPost('/moncash', { to: dest.email, amount: amt, ref: reference });
-
-        const ev = ledger.addEvent({
-          kind: 'MONCASH',
-          actor: dest.email,
-          amount: amt,
-          currency: 'USD',
-          ref: reference,
-          note: 'MonCash inbound (server-notified)',
-          createdAt: isoNow(),
-          source: 'server'
-        });
-
-        setCurrent(store.users.findByEmail(dest.email));
-        toast(`MonCash serveur: +${format(ev.amount)}`);
+        await apiRequest('/moncash', { method: 'POST', body: { to, amount: amt, ref: reference }, apiKey: true });
+        toast(`MonCash serveur: +${format(amt)}`);
+        await syncServerSession();
         router();
         return;
       } catch (err) {
@@ -435,6 +408,9 @@ document.addEventListener('DOMContentLoaded', () => {
         toast('Serveur indisponible — simulation locale');
       }
     }
+
+    const dest = store.users.findByEmail(to);
+    if (!dest) return toast('Destinataire introuvable');
 
     const ev = ledger.addEvent({
       kind: 'MONCASH',
@@ -452,7 +428,6 @@ document.addEventListener('DOMContentLoaded', () => {
     router();
   }
 
-  // --- render functions
   function router() {
     const path = location.hash.replace('#', '') || '/';
     const fn = routes[path] || notfound;
@@ -472,7 +447,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div>
               <div class="kv">Ti kochon coffre</div>
               <h2>Coffre digital simple pour gérer dépôts, retraits et P2P.</h2>
-              <p class="muted">Prototype local avec simulation MonCash, journal de transactions et solde client.</p>
+              <p class="muted">${serverMode() ? 'Mode serveur SQLite activé : auth serveur, ledger backend et transactions protégées.' : 'Prototype local avec simulation MonCash, journal de transactions et solde client.'}</p>
               <div class="hero-actions">
                 <button class="btn" onclick="location.hash='#/signup'">Créer un compte</button>
                 <button class="ghost" onclick="location.hash='#/login'">Se connecter</button>
@@ -485,12 +460,12 @@ document.addEventListener('DOMContentLoaded', () => {
         <div class="card">
           <h2>Vue rapide</h2>
           <div class="stats">
-            <div class="stat"><strong>${userCount}</strong><span>Compte(s)</span></div>
-            <div class="stat"><strong>${txCount}</strong><span>Événement(s)</span></div>
-            <div class="stat"><strong>${apiEnabled() ? 'ON' : 'OFF'}</strong><span>API backend</span></div>
+            <div class="stat"><strong>${serverMode() ? 'SQL' : userCount}</strong><span>${serverMode() ? 'Backend' : 'Compte(s)'}</span></div>
+            <div class="stat"><strong>${serverMode() ? 'AUTH' : txCount}</strong><span>${serverMode() ? 'Serveur' : 'Événement(s)'}</span></div>
+            <div class="stat"><strong>${serverMode() ? 'ON' : 'OFF'}</strong><span>API backend</span></div>
           </div>
           <div class="notice">
-            Mode prototype : données stockées localement dans ton navigateur. Ne pas utiliser comme système financier réel sans backend sécurisé.
+            ${serverMode() ? 'Mode MVP serveur : les nouveaux comptes et transactions passent par SQLite.' : 'Mode prototype : données stockées localement dans ton navigateur.'}
           </div>
         </div>
       </div>
@@ -498,9 +473,9 @@ document.addEventListener('DOMContentLoaded', () => {
       <div class="card" style="margin-top:14px">
         <div class="muted-xs">Test rapide</div>
         <ol class="small">
-          <li>Utilise <code>demo@fiaxy.test</code> / <code>demo123</code> ou crée un compte.</li>
-          <li>Simule un dépôt MonCash entrant.</li>
-          <li>Transfère vers un autre compte existant.</li>
+          <li>${serverMode() ? 'Crée un nouveau compte serveur avec un mot de passe de 8 caractères minimum.' : 'Utilise demo@fiaxy.test / demo123 ou crée un compte local.'}</li>
+          <li>Ajoute un dépôt, puis tente un retrait.</li>
+          <li>Teste un transfert P2P vers un autre compte existant.</li>
           <li>Vérifie l'historique dans Profil Tx.</li>
         </ol>
       </div>
@@ -510,10 +485,11 @@ document.addEventListener('DOMContentLoaded', () => {
   function signup() {
     $('#view').innerHTML = `
       <h2>Créer un compte</h2>
+      <p class="muted-xs">Mode actif : ${serverMode() ? 'Serveur SQLite' : 'Démo locale'}</p>
       <form id="signupForm" class="small">
         <label>Nom complet<input name="name" required minlength="2"></label>
         <label>Email<input name="email" required type="email"></label>
-        <label>Mot de passe<input name="password" required type="password" minlength="6" placeholder="min 6 caractères"></label>
+        <label>Mot de passe<input name="password" required type="password" minlength="${serverMode() ? 8 : 6}" placeholder="${serverMode() ? 'min 8 caractères' : 'min 6 caractères'}"></label>
         <div class="form-actions">
           <button class="btn" type="submit">S'inscrire</button>
           <button class="ghost" type="button" onclick="location.hash='#/login'">J'ai déjà un compte</button>
@@ -521,41 +497,31 @@ document.addEventListener('DOMContentLoaded', () => {
       </form>
     `;
 
-    $('#signupForm').addEventListener('submit', (e) => {
+    $('#signupForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-
       const f = Object.fromEntries(new FormData(e.target));
       const email = cleanEmail(f.email);
 
-      if (store.users.findByEmail(email)) {
-        toast('Email déjà utilisé');
-        return;
+      if (serverMode()) {
+        try {
+          const data = await apiRequest('/auth/signup', {
+            method: 'POST',
+            body: { name: f.name, email, password: f.password }
+          });
+          setAuthToken(data.session.token);
+          setCurrent({ ...data.user, balance: 0, serverMode: true });
+          toast('Compte serveur créé');
+          location.hash = '#/vault';
+          return;
+        } catch (err) {
+          toast(err.message || 'Erreur inscription serveur');
+          return;
+        }
       }
 
-      const user = store.users.upsert({
-        id: Date.now(),
-        name: String(f.name || '').trim(),
-        email,
-        pass: fauxHash(f.password),
-        balance: 0
-      });
-
-      ledger.addEvent({
-        kind: 'SIGNUP',
-        actor: user.email,
-        currency: 'USD',
-        ref: 'SIGNUP',
-        note: 'Compte créé',
-        createdAt: isoNow(),
-        source: 'client'
-      });
-
-      if (apiEnabled()) {
-        apiPost('/notify/signup', { name: user.name, email: user.email }).catch((err) =>
-          console.warn('[signup] notify failed:', err)
-        );
-      }
-
+      if (store.users.findByEmail(email)) return toast('Email déjà utilisé');
+      const user = store.users.upsert({ id: Date.now(), name: String(f.name || '').trim(), email, pass: fauxHash(f.password), balance: 0 });
+      ledger.addEvent({ kind: 'SIGNUP', actor: user.email, currency: 'USD', ref: 'SIGNUP', note: 'Compte créé', createdAt: isoNow(), source: 'client' });
       setCurrent(user);
       toast('Compte créé');
       location.hash = '#/vault';
@@ -565,6 +531,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function login() {
     $('#view').innerHTML = `
       <h2>Connexion</h2>
+      <p class="muted-xs">Mode actif : ${serverMode() ? 'Serveur SQLite' : 'Démo locale'}</p>
       <form id="loginForm" class="small">
         <label>Email<input name="email" required type="email"></label>
         <label>Mot de passe<input name="password" required type="password"></label>
@@ -575,36 +542,38 @@ document.addEventListener('DOMContentLoaded', () => {
       </form>
     `;
 
-    $('#loginForm').addEventListener('submit', (e) => {
+    $('#loginForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-
       const f = Object.fromEntries(new FormData(e.target));
       const email = cleanEmail(f.email);
-      const found = store.users.get().find((u) => u.email === email && u.pass === fauxHash(f.password));
 
-      if (!found) {
-        toast('Identifiants incorrects');
-        return;
+      if (serverMode()) {
+        try {
+          const data = await apiRequest('/auth/login', { method: 'POST', body: { email, password: f.password } });
+          setAuthToken(data.session.token);
+          setCurrent({ ...data.user, balance: 0, serverMode: true });
+          await syncServerSession();
+          toast('Connecté au serveur');
+          location.hash = '#/vault';
+          return;
+        } catch {
+          toast('Identifiants incorrects');
+          return;
+        }
       }
 
+      const found = store.users.get().find((u) => u.email === email && u.pass === fauxHash(f.password));
+      if (!found) return toast('Identifiants incorrects');
       setCurrent(found);
-      ledger.addEvent({
-        kind: 'LOGIN',
-        actor: found.email,
-        currency: 'USD',
-        ref: 'LOGIN-' + Date.now(),
-        note: 'Connexion',
-        createdAt: isoNow(),
-        source: 'client'
-      });
-
+      ledger.addEvent({ kind: 'LOGIN', actor: found.email, currency: 'USD', ref: 'LOGIN-' + Date.now(), note: 'Connexion', createdAt: isoNow(), source: 'client' });
       toast('Connecté');
       location.hash = '#/vault';
     });
   }
 
-  function vault() {
-    const user = currentUser();
+  async function vault() {
+    let user = currentUser();
+    if (serverMode() && authToken()) user = await syncServerSession();
 
     if (!user) {
       $('#view').innerHTML = `
@@ -615,7 +584,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const me = store.users.findByEmail(user.email) || user;
+    const me = serverMode() ? user : store.users.findByEmail(user.email) || user;
     sessionStorage.setItem(K_SESSION, JSON.stringify(me));
 
     $('#view').innerHTML = `
@@ -628,7 +597,7 @@ document.addEventListener('DOMContentLoaded', () => {
               <div class="muted">Email: ${escapeHtml(me.email)}</div>
               <div style="height:8px"></div>
               <div class="balance">${format(me.balance)}</div>
-              <div class="muted-xs">Solde disponible</div>
+              <div class="muted-xs">Solde disponible • ${serverMode() ? 'serveur SQLite' : 'local'}</div>
             </div>
           </div>
           <div class="hero-actions">
@@ -649,7 +618,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <label>Montant<input name="amount" type="number" required step="0.01" min="0.01" value="5"></label>
             <div class="form-actions">
               <button class="btn" type="submit">Envoyer</button>
-              <button type="button" class="ghost danger-soft" id="clearTxs">Effacer historique (dev)</button>
+              ${serverMode() ? '' : '<button type="button" class="ghost danger-soft" id="clearTxs">Effacer historique (dev)</button>'}
             </div>
           </form>
           <div style="height:8px"></div>
@@ -660,45 +629,40 @@ document.addEventListener('DOMContentLoaded', () => {
     `;
 
     $('#openMonBtn').addEventListener('click', () => openMonModal());
-    $('#logoutBtn').addEventListener('click', () => {
+    $('#logoutBtn').addEventListener('click', async () => {
+      if (serverMode() && authToken()) apiRequest('/auth/logout', { method: 'POST', auth: true }).catch(() => null);
       clearCurrent();
       toast('Déconnecté');
       router();
     });
 
-    $('#manualForm').addEventListener('submit', (e) => {
+    $('#manualForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-
       const f = Object.fromEntries(new FormData(e.target));
       const amt = money(f.amount);
+      if (!isPositiveAmount(amt)) return toast('Montant invalide');
+
+      if (serverMode()) {
+        try {
+          await serverTransaction(f.type === 'deposit' ? '/transactions/deposit' : '/transactions/withdraw', { amount: amt });
+          toast('Transaction serveur ok');
+          await syncServerSession();
+          router();
+          return;
+        } catch (err) {
+          toast(err.message || 'Transaction refusée');
+          return;
+        }
+      }
+
       const latestMe = store.users.findByEmail(me.email) || me;
-
-      if (!isPositiveAmount(amt)) {
-        toast('Montant invalide');
-        return;
-      }
-
-      if (f.type === 'withdraw' && amt > (latestMe.balance || 0)) {
-        toast('Solde insuffisant');
-        return;
-      }
-
-      ledger.addEvent({
-        kind: f.type === 'deposit' ? 'DEPOSIT' : 'WITHDRAW',
-        actor: latestMe.email,
-        amount: amt,
-        currency: 'USD',
-        ref: (f.type === 'deposit' ? 'DEP-' : 'WIT-') + Date.now(),
-        note: 'manual',
-        createdAt: isoNow(),
-        source: 'client'
-      });
-
+      if (f.type === 'withdraw' && amt > (latestMe.balance || 0)) return toast('Solde insuffisant');
+      ledger.addEvent({ kind: f.type === 'deposit' ? 'DEPOSIT' : 'WITHDRAW', actor: latestMe.email, amount: amt, currency: 'USD', ref: (f.type === 'deposit' ? 'DEP-' : 'WIT-') + Date.now(), note: 'manual', createdAt: isoNow(), source: 'client' });
       toast('Transaction ok');
       router();
     });
 
-    $('#clearTxs').addEventListener('click', () => {
+    $('#clearTxs')?.addEventListener('click', () => {
       if (!confirm("Effacer l'historique local de transactions ?")) return;
       localStorage.removeItem(K_EVENTS);
       store.schema.set('1');
@@ -708,12 +672,16 @@ document.addEventListener('DOMContentLoaded', () => {
       router();
     });
 
-    renderLastEvents(me.email);
+    if (serverMode()) {
+      const data = await apiRequest('/me/transactions?limit=6', { auth: true }).catch(() => ({ events: [] }));
+      renderEvents($('#lastTxs'), data.events || []);
+    } else {
+      renderLastEvents(me.email);
+    }
   }
 
   function p2p() {
     const user = currentUser();
-
     if (!user) {
       $('#view').innerHTML = `<h2>Transfert P2P</h2><p class="muted">Connecte-toi pour transférer vers un autre compte.</p>`;
       return;
@@ -729,96 +697,66 @@ document.addEventListener('DOMContentLoaded', () => {
       </form>
     `;
 
-    $('#p2pForm').addEventListener('submit', (e) => {
+    $('#p2pForm').addEventListener('submit', async (e) => {
       e.preventDefault();
-
       const f = Object.fromEntries(new FormData(e.target));
+      const amt = money(f.amount);
+      if (!isPositiveAmount(amt)) return toast('Montant invalide');
+
+      if (serverMode()) {
+        try {
+          await serverTransaction('/transactions/p2p', { to: f.to, amount: amt, note: f.note || 'p2p' });
+          toast('Transfert serveur effectué');
+          await syncServerSession();
+          location.hash = '#/vault';
+          return;
+        } catch (err) {
+          toast(err.message || 'Transfert refusé');
+          return;
+        }
+      }
+
       const me = store.users.findByEmail(currentUser().email);
       const to = store.users.findByEmail(f.to);
-      const amt = money(f.amount);
+      if (!to) return toast('Destinataire non trouvé');
+      if (to.email === me.email) return toast('Transfert vers soi-même impossible');
+      if (amt > (me.balance || 0)) return toast('Solde insuffisant');
 
-      if (!me) {
-        toast('Session invalide');
-        clearCurrent();
-        router();
-        return;
-      }
-
-      if (!to) {
-        toast('Destinataire non trouvé');
-        return;
-      }
-
-      if (to.email === me.email) {
-        toast('Transfert vers soi-même impossible');
-        return;
-      }
-
-      if (!isPositiveAmount(amt)) {
-        toast('Montant invalide');
-        return;
-      }
-
-      if (amt > (me.balance || 0)) {
-        toast('Solde insuffisant');
-        return;
-      }
-
-      ledger.addEvent({
-        kind: 'P2P',
-        actor: me.email,
-        counterparty: to.email,
-        amount: amt,
-        currency: 'USD',
-        ref: 'P2P-' + Date.now(),
-        note: String(f.note || 'p2p').trim(),
-        createdAt: isoNow(),
-        source: 'client'
-      });
-
+      ledger.addEvent({ kind: 'P2P', actor: me.email, counterparty: to.email, amount: amt, currency: 'USD', ref: 'P2P-' + Date.now(), note: String(f.note || 'p2p').trim(), createdAt: isoNow(), source: 'client' });
       toast('Transfert effectué');
       router();
     });
   }
 
-  function txs() {
+  async function txs() {
     const user = currentUser();
-
     if (!user) {
       $('#view').innerHTML = `<h2>Profil transaction</h2><p class="muted">Connecte-toi pour voir ton historique.</p>`;
       return;
     }
 
-    const list = ledger
-      .historyFor(user.email)
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    $('#view').innerHTML = `<h2>Profil de transaction — ${escapeHtml(user.name)}</h2><div class="card log">Chargement...</div>`;
+
+    const list = serverMode()
+      ? ((await apiRequest('/me/transactions?limit=100', { auth: true }).catch(() => ({ events: [] }))).events || [])
+      : ledger.historyFor(user.email).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
     $('#view').innerHTML = `
       <h2>Profil de transaction — ${escapeHtml(user.name)}</h2>
       <div style="height:12px"></div>
       <div class="card table-wrap">
         <table>
-          <thead>
-            <tr><th>Type</th><th>Montant</th><th>Contrepartie</th><th>Référence</th><th>Heure</th></tr>
-          </thead>
+          <thead><tr><th>Type</th><th>Montant</th><th>Contrepartie</th><th>Statut</th><th>Référence</th><th>Heure</th></tr></thead>
           <tbody>
-            ${
-              list.length
-                ? list
-                    .slice(0, 40)
-                    .map(
-                      (t) => `
-                        <tr>
-                          <td>${eventLabel(t.kind)}</td>
-                          <td>${t.amount !== undefined ? format(t.amount) : '-'}</td>
-                          <td>${t.counterparty ? escapeHtml(t.counterparty) : '—'}</td>
-                          <td>${escapeHtml(t.ref || '')}</td>
-                          <td>${new Date(t.createdAt).toLocaleString()}</td>
-                        </tr>`
-                    )
-                    .join('')
-                : '<tr><td colspan="5" class="muted">Aucune transaction.</td></tr>'
-            }
+            ${list.length ? list.slice(0, 100).map((t) => `
+              <tr>
+                <td>${eventLabel(t.kind)}</td>
+                <td>${t.amount !== undefined ? format(t.amount) : '-'}</td>
+                <td>${t.counterparty ? escapeHtml(t.counterparty) : '—'}</td>
+                <td>${escapeHtml(t.status || 'confirmed')}</td>
+                <td>${escapeHtml(t.ref || '')}</td>
+                <td>${new Date(t.createdAt).toLocaleString()}</td>
+              </tr>`).join('') : '<tr><td colspan="6" class="muted">Aucune transaction.</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -829,48 +767,37 @@ document.addEventListener('DOMContentLoaded', () => {
     $('#view').innerHTML = `<h2>404</h2><p class="muted">Page introuvable</p>`;
   }
 
-  // --- UI helpers
   function renderEvents(target, list) {
+    if (!target) return;
     target.innerHTML =
       list.length === 0
         ? 'Aucune transaction.'
-        : list
-            .map(
-              (t) => `
-              <div class="tx-item">
-                <div class="small"><strong>${eventLabel(t.kind)}</strong> ${t.amount !== undefined ? format(t.amount) : ''}</div>
-                <div class="muted-xs">${escapeHtml(t.actor)} ${t.counterparty ? '→ ' + escapeHtml(t.counterparty) : ''} • ${new Date(t.createdAt).toLocaleString()}</div>
-              </div>`
-            )
-            .join('');
+        : list.map((t) => `
+          <div class="tx-item">
+            <div class="small"><strong>${eventLabel(t.kind)}</strong> ${t.amount !== undefined ? format(t.amount) : ''}</div>
+            <div class="muted-xs">${escapeHtml(t.actor)} ${t.counterparty ? '→ ' + escapeHtml(t.counterparty) : ''} • ${escapeHtml(t.status || 'confirmed')} • ${new Date(t.createdAt).toLocaleString()}</div>
+          </div>`).join('');
   }
 
   function renderLastEvents(email) {
-    const target = $('#lastTxs');
-    if (!target) return;
-
-    const last = ledger.historyFor(email).slice(-6).reverse();
-    renderEvents(target, last);
+    renderEvents($('#lastTxs'), ledger.historyFor(email).slice(-6).reverse());
   }
 
-  function renderSide() {
+  async function renderSide() {
     const user = currentUser();
     const si = $('#sessionInfo');
     const side = $('#sideActions');
     const mini = $('#miniTx');
-
     if (!si || !side || !mini) return;
 
     if (user) {
-      const fresh = store.users.findByEmail(user.email) || user;
-
       si.innerHTML = `
-        <div><strong>${escapeHtml(fresh.name)}</strong></div>
-        <div class="muted-xs">${escapeHtml(fresh.email)}</div>
+        <div><strong>${escapeHtml(user.name)}</strong></div>
+        <div class="muted-xs">${escapeHtml(user.email)}</div>
         <div style="height:8px"></div>
-        <div class="balance">${format(fresh.balance)}</div>
+        <div class="balance">${format(user.balance)}</div>
+        <div class="muted-xs">${serverMode() ? 'Serveur SQLite' : 'Démo locale'}</div>
       `;
-
       side.innerHTML = `
         <div class="side-actions">
           <button class="ghost" onclick="location.hash='#/vault'">Mon coffre</button>
@@ -878,8 +805,8 @@ document.addEventListener('DOMContentLoaded', () => {
           <button class="ghost" id="sideLogout">Se déconnecter</button>
         </div>
       `;
-
       document.getElementById('sideLogout')?.addEventListener('click', () => {
+        if (serverMode() && authToken()) apiRequest('/auth/logout', { method: 'POST', auth: true }).catch(() => null);
         clearCurrent();
         toast('Déconnecté');
         router();
@@ -894,19 +821,22 @@ document.addEventListener('DOMContentLoaded', () => {
       `;
     }
 
-    const txs = ledger.getEvents().slice(-6).reverse();
-    renderEvents(mini, txs);
+    if (serverMode() && authToken()) {
+      const data = await apiRequest('/me/transactions?limit=6', { auth: true }).catch(() => ({ events: [] }));
+      renderEvents(mini, data.events || []);
+    } else {
+      renderEvents(mini, ledger.getEvents().slice(-6).reverse());
+    }
   }
 
-  // --- boot
-  function boot() {
+  async function boot() {
+    if (serverMode() && authToken()) await syncServerSession();
     renderSide();
     router();
   }
 
   boot();
 
-  // expose for inline buttons + console debugging
   window.openMonModal = openMonModal;
   window.simulateMoncash = simulateMoncash;
   window.ledger = ledger;
