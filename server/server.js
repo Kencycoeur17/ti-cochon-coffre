@@ -15,11 +15,18 @@ const {
   validateEmail
 } = require('./auth');
 const { createLedgerEvent, getBalance, getHistory } = require('./sqlite-ledger');
+const {
+  requireAdmin,
+  getAdminSummary,
+  listAdminUsers,
+  listAdminTransactions
+} = require('./admin');
 
 const app = express();
 
 const PORT = process.env.PORT || 3000;
 const API_KEY = process.env.API_KEY;
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN;
 const APP_MODE = process.env.APP_MODE || 'prototype';
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 
@@ -36,6 +43,7 @@ app.use(
 app.use(express.json({ limit: '64kb' }));
 
 const mailer = createMailer(process.env);
+const adminOnly = requireAdmin(ADMIN_TOKEN);
 
 function htmlEscape(value) {
   return String(value ?? '')
@@ -65,6 +73,7 @@ app.get('/health', (req, res) => {
     mode: APP_MODE,
     storage: 'sqlite',
     mailer: mailer.enabled ? 'enabled' : 'disabled',
+    admin: ADMIN_TOKEN ? 'enabled' : 'disabled',
     time: new Date().toISOString()
   });
 });
@@ -136,6 +145,24 @@ app.get('/auth/me', requireAuth(), async (req, res) => {
 app.post('/auth/logout', requireAuth(), async (req, res) => {
   await revokeSession(bearerToken(req));
   return res.json({ ok: true });
+});
+
+// --- Admin routes
+app.get('/admin/summary', adminOnly, async (req, res) => {
+  const summary = await getAdminSummary();
+  return res.json({ ok: true, summary });
+});
+
+app.get('/admin/users', adminOnly, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 100), 1000);
+  const users = await listAdminUsers({ limit });
+  return res.json({ ok: true, users });
+});
+
+app.get('/admin/transactions', adminOnly, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 100), 1000);
+  const events = await listAdminTransactions({ limit });
+  return res.json({ ok: true, events });
 });
 
 // --- Authenticated wallet routes
